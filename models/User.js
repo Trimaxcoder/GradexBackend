@@ -4,7 +4,7 @@ const bcrypt   = require('bcryptjs');
 // ── Grading Rule sub-schema ───────────────────────────────────────────────────
 const GradeRuleSchema = new mongoose.Schema(
   {
-    grade:      { type: String, required: true },   // "A", "B", "C" …
+    grade:      { type: String, required: true },
     minScore:   { type: Number, required: true, min: 0, max: 100 },
     gradePoint: { type: Number, required: true, min: 0 },
   },
@@ -36,18 +36,18 @@ const StudentProfileSchema = new mongoose.Schema(
 const UserSchema = new mongoose.Schema(
   {
     email: {
-      type:     String,
-      required: [true, 'Email is required'],
-      unique:   true,
+      type:      String,
+      required:  [true, 'Email is required'],
+      unique:    true,
       lowercase: true,
-      trim:     true,
-      match:    [/^\S+@\S+\.\S+$/, 'Invalid email address'],
+      trim:      true,
+      match:     [/^\S+@\S+\.\S+$/, 'Invalid email address'],
     },
     password: {
-      type:     String,
-      required: [true, 'Password is required'],
+      type:      String,
+      required:  [true, 'Password is required'],
       minlength: [6, 'Password must be at least 6 characters'],
-      select:   false,   // never returned in queries by default
+      select:    false,
     },
     profile: {
       type:    StudentProfileSchema,
@@ -61,6 +61,21 @@ const UserSchema = new mongoose.Schema(
       type:   String,
       select: false,
     },
+
+    // ── Password reset ──────────────────────────────────────────────────────
+    resetPasswordToken: {
+      type:   String,
+      select: false,
+    },
+    resetPasswordExpiry: {
+      type:   Date,
+      select: false,
+    },
+
+    // ── Google OAuth ────────────────────────────────────────────────────────
+    googleId: {
+      type: String,
+    },
   },
   { timestamps: true }
 );
@@ -68,7 +83,7 @@ const UserSchema = new mongoose.Schema(
 // ── Pre-save: hash password ───────────────────────────────────────────────────
 UserSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  const salt   = await bcrypt.genSalt(12);
+  const salt    = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });
@@ -83,6 +98,8 @@ UserSchema.methods.toJSON = function () {
   const obj = this.toObject();
   delete obj.password;
   delete obj.refreshToken;
+  delete obj.resetPasswordToken;
+  delete obj.resetPasswordExpiry;
   return obj;
 };
 
