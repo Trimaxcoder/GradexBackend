@@ -331,7 +331,10 @@ router.post("/google", authLimiter, async (req, res, next) => {
     console.log("=== token issuer:", decoded.iss);
     const ticket = await googleClient.verifyIdToken({
       idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: [
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_ID_ANDROID,
+  ],
     });
     const { email, name, sub: googleId } = ticket.getPayload();
 
