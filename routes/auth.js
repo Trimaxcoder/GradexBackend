@@ -323,6 +323,12 @@ router.post("/google", authLimiter, async (req, res, next) => {
     }
     
     console.log("=== CLIENT_ID:", process.env.GOOGLE_CLIENT_ID);
+    console.log("=== idToken first 50 chars:", idToken?.slice(0, 50));
+
+    // Decode without verifying to see the audience
+    const decoded = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64').toString());
+    console.log("=== token audience:", decoded.aud);
+    console.log("=== token issuer:", decoded.iss);
     const ticket = await googleClient.verifyIdToken({
       idToken,
       audience: process.env.GOOGLE_CLIENT_ID,
