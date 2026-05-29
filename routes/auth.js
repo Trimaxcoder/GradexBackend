@@ -321,7 +321,8 @@ router.post("/google", authLimiter, async (req, res, next) => {
         .status(400)
         .json({ success: false, message: "idToken is required." });
     }
-
+    
+    console.log("=== CLIENT_ID:", process.env.GOOGLE_CLIENT_ID);
     const ticket = await googleClient.verifyIdToken({
       idToken,
       audience: process.env.GOOGLE_CLIENT_ID,
