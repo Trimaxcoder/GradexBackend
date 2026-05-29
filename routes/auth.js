@@ -25,10 +25,12 @@ const authLimiter = rateLimit({
 
 // ── Email transporter (Gmail) ─────────────────────────────────────────────────
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host:   process.env.EMAIL_HOST,
+  port:   parseInt(process.env.EMAIL_PORT),
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS, // Gmail App Password (not your normal password)
+    pass: process.env.EMAIL_PASS,
   },
 });
 
