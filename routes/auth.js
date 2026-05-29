@@ -3,7 +3,7 @@ const { body, validationResult } = require("express-validator");
 const rateLimit = require("express-rate-limit");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
+const { BrevoClient } = require("@getbrevo/brevo");   // ← replaces nodemailer
 const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
 const {
@@ -23,16 +23,8 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// ── Email transporter (Gmail) ─────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
-  host:   process.env.EMAIL_HOST,
-  port:   465,
-  secure: true,  // true for 465
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+// ── Brevo HTTP email client (replaces nodemailer SMTP) ────────────────────────
+const brevo = new BrevoClient({ apiKey: process.env.BREVO_API_KEY });
 
 // ── Google OAuth client ───────────────────────────────────────────────────────
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -227,11 +219,15 @@ router.post("/forgot-password", authLimiter, async (req, res, next) => {
     const resetUrl = `${process.env.FRONTEND_URL || "https://yourapp.com"}/reset-password?token=${token}`;
     const userName = user.profile?.name || "there";
 
-    await transporter.sendMail({
-      from: `"Gradex" <${process.env.EMAIL_USER}>`,
-      to: user.email,
+    // ── Send via Brevo HTTP API (no SMTP) ─────────────────────────────────────
+    await brevo.transactionalEmails.sendTransacEmail({
+      sender: {
+        name: "Gradex",
+        email: process.env.EMAIL_FROM, // e.g. noreply@yourdomain.com
+      },
+      to: [{ email: user.email, name: userName }],
       subject: "Reset Your Gradex Password",
-      html: `
+      htmlContent: `
         <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;">
           <div style="background:linear-gradient(135deg,#1565C0,#283593);padding:32px;
                       border-radius:12px 12px 0 0;text-align:center;">
@@ -277,20 +273,16 @@ router.post("/reset-password", async (req, res, next) => {
     const { token, newPassword } = req.body;
 
     if (!token || !newPassword) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Token and new password are required.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Token and new password are required.",
+      });
     }
     if (newPassword.length < 6) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Password must be at least 6 characters.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters.",
+      });
     }
 
     const user = await User.findOne({
@@ -299,12 +291,10 @@ router.post("/reset-password", async (req, res, next) => {
     });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Reset link is invalid or has expired.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Reset link is invalid or has expired.",
+      });
     }
 
     // Assign plain password — your User model's pre-save hook will hash it
