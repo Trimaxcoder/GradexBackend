@@ -323,6 +323,7 @@ router.post("/google", authLimiter, async (req, res, next) => {
     }
     
     console.log("=== CLIENT_ID:", process.env.GOOGLE_CLIENT_ID);
+    console.log("=== CLIENT_ID_ANDROID:", process.env.GOOGLE_CLIENT_ID_ANDROID);
     console.log("=== idToken first 50 chars:", idToken?.slice(0, 50));
 
     // Decode without verifying to see the audience
