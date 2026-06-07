@@ -168,11 +168,9 @@ router.delete('/', async (req, res, next) => {
 });
 
 // ── POST /api/courses/sync ────────────────────────────────────────────────────
-// Full bidirectional sync called when Flutter app starts / regains connection.
-// Flutter sends its local list; server returns merged authoritative list.
 router.post('/sync', async (req, res, next) => {
   try {
-    const { courses: localCourses } = req.body;
+    const { courses: localCourses, deletedServerIds } = req.body;
 
     if (!Array.isArray(localCourses)) {
       return res.status(400).json({
@@ -181,9 +179,17 @@ router.post('/sync', async (req, res, next) => {
       });
     }
 
+    // Delete courses that were deleted on the client
+    if (Array.isArray(deletedServerIds) && deletedServerIds.length > 0) {
+      await Course.deleteMany({
+        _id: { $in: deletedServerIds },
+        userId: req.user._id,
+      });
+    }
+
     // Fetch current server courses
     const serverCourses = await Course.find({ userId: req.user._id });
-    const serverKeys    = new Set(
+    const serverKeys = new Set(
       serverCourses.map((c) => `${c.name}_${c.unit}_${c.year}_${c.semester}`)
     );
 
@@ -197,18 +203,17 @@ router.post('/sync', async (req, res, next) => {
     for (const c of toInsert) {
       try {
         await Course.create({
-          userId:   req.user._id,
+          userId: req.user._id,
           clientId: c.id || '',
-          name:     c.name,
-          title:    c.title || '',
-          score:    c.score,
-          unit:     c.unit,
-          year:     c.year,
+          name: c.name,
+          title: c.title || '',
+          score: c.score,
+          unit: c.unit,
+          year: c.year,
           semester: c.semester,
         });
         inserted++;
       } catch (e) {
-        // Skip duplicates silently
         if (e.code !== 11000) console.error('Sync insert error:', e.message);
       }
     }
@@ -219,10 +224,10 @@ router.post('/sync', async (req, res, next) => {
     });
 
     res.json({
-      success:  true,
+      success: true,
       inserted,
-      total:    allCourses.length,
-      courses:  allCourses,
+      total: allCourses.length,
+      courses: allCourses,
     });
   } catch (err) {
     next(err);
