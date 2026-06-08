@@ -1,7 +1,7 @@
-const express = require('express');
-const { body, param, validationResult } = require('express-validator');
-const Course  = require('../models/Course');
-const { protect } = require('../middleware/auth');
+const express = require("express");
+const { body, param, validationResult } = require("express-validator");
+const Course = require("../models/Course");
+const { protect } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -10,13 +10,17 @@ router.use(protect);
 
 // ── GET /api/courses ──────────────────────────────────────────────────────────
 // Optional query params: ?year=1&semester=2
-router.get('/', async (req, res, next) => {
+router.get("/", async (req, res, next) => {
   try {
     const filter = { userId: req.user._id };
-    if (req.query.year)     filter.year     = Number(req.query.year);
+    if (req.query.year) filter.year = Number(req.query.year);
     if (req.query.semester) filter.semester = Number(req.query.semester);
 
-    const courses = await Course.find(filter).sort({ year: 1, semester: 1, createdAt: 1 });
+    const courses = await Course.find(filter).sort({
+      year: 1,
+      semester: 1,
+      createdAt: 1,
+    });
     res.json({ success: true, count: courses.length, courses });
   } catch (err) {
     next(err);
@@ -25,22 +29,16 @@ router.get('/', async (req, res, next) => {
 
 // ── POST /api/courses ─────────────────────────────────────────────────────────
 const courseValidators = [
-  body('name').notEmpty().withMessage('Course name/code is required').trim(),
-  body('score')
-    .isInt({ min: 0, max: 100 })
-    .withMessage('Score must be 0–100'),
-  body('unit')
-    .isInt({ min: 1, max: 6 })
-    .withMessage('Unit must be 1–6'),
-  body('year')
-    .isInt({ min: 1, max: 7 })
-    .withMessage('Year must be 1–7'),
-  body('semester')
+  body("name").notEmpty().withMessage("Course name/code is required").trim(),
+  body("score").isInt({ min: 0, max: 100 }).withMessage("Score must be 0–100"),
+  body("unit").isInt({ min: 1, max: 6 }).withMessage("Unit must be 1–6"),
+  body("year").isInt({ min: 1, max: 7 }).withMessage("Year must be 1–7"),
+  body("semester")
     .isInt({ min: 1, max: 2 })
-    .withMessage('Semester must be 1 or 2'),
+    .withMessage("Semester must be 1 or 2"),
 ];
 
-router.post('/', courseValidators, async (req, res, next) => {
+router.post("/", courseValidators, async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -50,10 +48,10 @@ router.post('/', courseValidators, async (req, res, next) => {
     const { name, title, score, unit, year, semester, clientId } = req.body;
 
     const course = await Course.create({
-      userId:   req.user._id,
-      clientId: clientId || '',
+      userId: req.user._id,
+      clientId: clientId || "",
       name,
-      title:    title || '',
+      title: title || "",
       score,
       unit,
       year,
@@ -65,16 +63,16 @@ router.post('/', courseValidators, async (req, res, next) => {
     // Duplicate → still return the existing document
     if (err.code === 11000) {
       const existing = await Course.findOne({
-        userId:   req.user._id,
-        name:     req.body.name?.toUpperCase(),
-        unit:     req.body.unit,
-        year:     req.body.year,
+        userId: req.user._id,
+        name: req.body.name?.toUpperCase(),
+        unit: req.body.unit,
+        year: req.body.year,
         semester: req.body.semester,
       });
       return res.status(409).json({
-        success:  false,
-        message:  'Course already exists for this semester.',
-        course:   existing,
+        success: false,
+        message: "Course already exists for this semester.",
+        course: existing,
       });
     }
     next(err);
@@ -83,9 +81,9 @@ router.post('/', courseValidators, async (req, res, next) => {
 
 // ── PUT /api/courses/:id ──────────────────────────────────────────────────────
 router.put(
-  '/:id',
+  "/:id",
   [
-    param('id').isMongoId().withMessage('Invalid course ID'),
+    param("id").isMongoId().withMessage("Invalid course ID"),
     ...courseValidators,
   ],
   async (req, res, next) => {
@@ -96,22 +94,22 @@ router.put(
       }
 
       const course = await Course.findOneAndUpdate(
-        { _id: req.params.id, userId: req.user._id },   // ownership check
+        { _id: req.params.id, userId: req.user._id }, // ownership check
         {
-          name:     req.body.name,
-          title:    req.body.title || '',
-          score:    req.body.score,
-          unit:     req.body.unit,
-          year:     req.body.year,
+          name: req.body.name,
+          title: req.body.title || "",
+          score: req.body.score,
+          unit: req.body.unit,
+          year: req.body.year,
           semester: req.body.semester,
         },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       );
 
       if (!course) {
         return res.status(404).json({
           success: false,
-          message: 'Course not found or access denied.',
+          message: "Course not found or access denied.",
         });
       }
 
@@ -119,13 +117,13 @@ router.put(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
 // ── DELETE /api/courses/:id ───────────────────────────────────────────────────
 router.delete(
-  '/:id',
-  [param('id').isMongoId().withMessage('Invalid course ID')],
+  "/:id",
+  [param("id").isMongoId().withMessage("Invalid course ID")],
   async (req, res, next) => {
     try {
       const errors = validationResult(req);
@@ -134,33 +132,37 @@ router.delete(
       }
 
       const course = await Course.findOneAndDelete({
-        _id:    req.params.id,
+        _id: req.params.id,
         userId: req.user._id,
       });
 
       if (!course) {
         return res.status(404).json({
           success: false,
-          message: 'Course not found or access denied.',
+          message: "Course not found or access denied.",
         });
       }
 
-      res.json({ success: true, message: 'Course deleted.', courseId: req.params.id });
+      res.json({
+        success: true,
+        message: "Course deleted.",
+        courseId: req.params.id,
+      });
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
 // ── DELETE /api/courses ───────────────────────────────────────────────────────
 // Wipe all courses for this user
-router.delete('/', async (req, res, next) => {
+router.delete("/", async (req, res, next) => {
   try {
     const result = await Course.deleteMany({ userId: req.user._id });
     res.json({
-      success:  true,
-      message:  `${result.deletedCount} course(s) deleted.`,
-      deleted:  result.deletedCount,
+      success: true,
+      message: `${result.deletedCount} course(s) deleted.`,
+      deleted: result.deletedCount,
     });
   } catch (err) {
     next(err);
@@ -168,11 +170,11 @@ router.delete('/', async (req, res, next) => {
 });
 
 // ── POST /api/courses/sync ────────────────────────────────────────────────────
-router.post('/sync', async (req, res, next) => {
+router.post("/sync", async (req, res, next) => {
   try {
     const { courses: localCourses, deletedServerIds } = req.body;
-    console.log('=== SYNC deletedServerIds received:', deletedServerIds);
-    console.log('=== SYNC localCourses count:', localCourses?.length);
+    console.log("=== SYNC deletedServerIds received:", deletedServerIds);
+    console.log("=== SYNC localCourses count:", localCourses?.length);
 
     if (!Array.isArray(localCourses)) {
       return res.status(400).json({
@@ -192,13 +194,15 @@ router.post('/sync', async (req, res, next) => {
     // Fetch current server courses
     const serverCourses = await Course.find({ userId: req.user._id });
     const serverKeys = new Set(
-      serverCourses.map((c) => `${c.name}_${c.unit}_${c.year}_${c.semester}`)
+      serverCourses.map((c) => `${c.name}_${c.unit}_${c.year}_${c.semester}`),
     );
 
-    // Insert courses that exist locally but not on server
     const toInsert = localCourses.filter((c) => {
-      const key = `${(c.name || '').toUpperCase()}_${c.unit}_${c.year}_${c.semester}`;
-      return !serverKeys.has(key);
+      const key = `${(c.name || "").toUpperCase()}_${c.unit}_${c.year}_${c.semester}`;
+      const isDeleted =
+        Array.isArray(deletedServerIds) &&
+        deletedServerIds.includes(c.serverId || c._id || "");
+      return !serverKeys.has(key) && !isDeleted;
     });
 
     let inserted = 0;
@@ -206,9 +210,9 @@ router.post('/sync', async (req, res, next) => {
       try {
         await Course.create({
           userId: req.user._id,
-          clientId: c.id || '',
+          clientId: c.id || "",
           name: c.name,
-          title: c.title || '',
+          title: c.title || "",
           score: c.score,
           unit: c.unit,
           year: c.year,
@@ -216,13 +220,15 @@ router.post('/sync', async (req, res, next) => {
         });
         inserted++;
       } catch (e) {
-        if (e.code !== 11000) console.error('Sync insert error:', e.message);
+        if (e.code !== 11000) console.error("Sync insert error:", e.message);
       }
     }
 
     // Return the complete authoritative list
     const allCourses = await Course.find({ userId: req.user._id }).sort({
-      year: 1, semester: 1, createdAt: 1,
+      year: 1,
+      semester: 1,
+      createdAt: 1,
     });
 
     res.json({
