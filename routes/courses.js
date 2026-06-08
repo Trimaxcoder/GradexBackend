@@ -191,18 +191,19 @@ router.post("/sync", async (req, res, next) => {
       });
     }
 
-    // Fetch current server courses
+    // Only insert courses that have NO serverId (brand new local courses)
     const serverCourses = await Course.find({ userId: req.user._id });
-    const serverKeys = new Set(
-      serverCourses.map((c) => `${c.name}_${c.unit}_${c.year}_${c.semester}`),
-    );
+    const serverIds = new Set(serverCourses.map((c) => c._id.toString()));
 
     const toInsert = localCourses.filter((c) => {
+      // Skip if it already has a serverId — it exists on server already
+      if (c.serverId) return false;
+      // Skip if matching by name/unit/year/semester
       const key = `${(c.name || "").toUpperCase()}_${c.unit}_${c.year}_${c.semester}`;
-      const isDeleted =
-        Array.isArray(deletedServerIds) &&
-        deletedServerIds.includes(c.serverId || c._id || "");
-      return !serverKeys.has(key) && !isDeleted;
+      const serverKeys = new Set(
+        serverCourses.map((s) => `${s.name}_${s.unit}_${s.year}_${s.semester}`),
+      );
+      return !serverKeys.has(key);
     });
 
     let inserted = 0;
