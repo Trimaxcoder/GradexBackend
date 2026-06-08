@@ -171,6 +171,8 @@ router.delete('/', async (req, res, next) => {
 router.post('/sync', async (req, res, next) => {
   try {
     const { courses: localCourses, deletedServerIds } = req.body;
+    console.log('=== SYNC deletedServerIds received:', deletedServerIds);
+    console.log('=== SYNC localCourses count:', localCourses?.length);
 
     if (!Array.isArray(localCourses)) {
       return res.status(400).json({
