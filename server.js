@@ -78,7 +78,7 @@ app.use(errorHandler);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0',  () => {
   console.log(`🚀  Server running on port ${PORT} [${process.env.NODE_ENV}]`);
   console.log(`   Health check → http://localhost:${PORT}/health`);
 });
