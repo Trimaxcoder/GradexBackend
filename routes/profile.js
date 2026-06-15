@@ -29,7 +29,7 @@ router.put(
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const allowed = ['name', 'matricNumber', 'department', 'faculty', 'email', 'school'];
+      const allowed = ['name', 'matricNumber', 'department', 'faculty', 'email', 'school', 'level'];
       const updates = {};
       allowed.forEach((field) => {
         if (req.body[field] !== undefined) updates[`profile.${field}`] = req.body[field];

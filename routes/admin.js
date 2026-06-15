@@ -1,21 +1,33 @@
 const express      = require('express');
 const router       = express.Router();
-const  { protect: auth }        = require('../middleware/auth');
+const { protect: auth } = require('../middleware/auth');
 const AdminRequest = require('../models/AdminRequest');
 const User         = require('../models/User');
 const FcmToken     = require('../models/FcmToken');
 const { sendToTokens } = require('../config/firebase');
 
-// ── Apply to become an admin (course rep) ───────────────────────────────
-// POST /admin/request
+// POST /api/admin/request
 router.post('/request', auth, async (req, res, next) => {
   try {
-    const { school, faculty, department, level, reason, proofUrl } = req.body;
-    if (!school || !faculty || !department || !level || !reason) {
-      return res.status(400).json({ message: 'All fields are required' });
+    const { reason } = req.body;
+
+    // 1. Validate reason
+    if (!reason || reason.trim().length < 20) {
+      return res.status(400).json({
+        message: 'Please provide a reason of at least 20 characters',
+      });
     }
 
-    // Check max 2 admins per dept/level
+    // 2. Pull profile from DB (prevents spoofing)
+    const { school, faculty, department, level } = req.user.profile || {};
+
+    if (!school || !faculty || !department || !level) {
+      return res.status(400).json({
+        message: 'Please complete your profile (school, faculty, department, level) before requesting admin access',
+      });
+    }
+
+    // 3. Max 2 admins per dept/level
     const existingAdmins = await User.countDocuments({
       isAdmin: true,
       'profile.school':     school,
@@ -29,19 +41,23 @@ router.post('/request', auth, async (req, res, next) => {
       });
     }
 
-    // Check no duplicate pending request
+    // 4. No duplicate pending request
     const existing = await AdminRequest.findOne({
       user: req.user._id,
       status: 'pending',
     });
     if (existing) {
-      return res.status(400).json({ message: 'You already have a pending request.' });
+      return res.status(400).json({
+        message: 'You already have a pending request.',
+      });
     }
 
+    // 5. Create using verified DB profile data
     const request = await AdminRequest.create({
       user: req.user._id,
-      school, faculty, department, level, reason,
-      proofUrl: proofUrl || '',
+      school, faculty, department, level,
+      reason: reason.trim(),
+      proofUrl: '',
     });
 
     res.status(201).json({ message: 'Request submitted', request });
@@ -50,8 +66,7 @@ router.post('/request', auth, async (req, res, next) => {
   }
 });
 
-// ── Check own admin request status ──────────────────────────────────────
-// GET /admin/status
+// GET /api/admin/status
 router.get('/status', auth, async (req, res, next) => {
   try {
     const request = await AdminRequest.findOne({ user: req.user._id })
@@ -63,8 +78,7 @@ router.get('/status', auth, async (req, res, next) => {
   }
 });
 
-// ── Get all pending requests (super admin only) ──────────────────────────
-// GET /admin/pending
+// GET /api/admin/pending (super admin only)
 router.get('/pending', auth, async (req, res, next) => {
   try {
     if (!req.user.isSuperAdmin) {
@@ -78,15 +92,14 @@ router.get('/pending', auth, async (req, res, next) => {
   }
 });
 
-// ── Approve or reject a request (super admin only) ──────────────────────
-// PUT /admin/review/:id
+// PUT /api/admin/review/:id (super admin only)
 router.put('/review/:id', auth, async (req, res, next) => {
   try {
     if (!req.user.isSuperAdmin) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
-    const { status, reviewNote } = req.body; // status: 'approved' | 'rejected'
+    const { status, reviewNote } = req.body;
     if (!['approved', 'rejected'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
     }
@@ -102,14 +115,13 @@ router.put('/review/:id', auth, async (req, res, next) => {
 
     if (status === 'approved') {
       await User.findByIdAndUpdate(request.user._id, {
-        isAdmin:             true,
+        isAdmin:              true,
         'profile.school':     request.school,
         'profile.faculty':    request.faculty,
         'profile.department': request.department,
         'profile.level':      request.level,
       });
 
-      // Notify the approved user
       const fcmDoc = await FcmToken.findOne({ user: request.user._id });
       if (fcmDoc?.token) {
         await sendToTokens(
@@ -120,7 +132,6 @@ router.put('/review/:id', auth, async (req, res, next) => {
         );
       }
     } else {
-      // Notify rejection
       const fcmDoc = await FcmToken.findOne({ user: request.user._id });
       if (fcmDoc?.token) {
         await sendToTokens(
