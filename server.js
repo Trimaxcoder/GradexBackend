@@ -11,6 +11,9 @@ const authRoutes    = require('./routes/auth');
 const profileRoutes = require('./routes/profile');
 const courseRoutes  = require('./routes/courses');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
+const notificationRoutes = require('./routes/notifications');
+const adminRoutes  = require('./routes/admin');
+const timetableRoutes  = require('./routes/timetable');
 
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
 connectDB();
@@ -65,6 +68,9 @@ app.get('/health', (req, res) =>
 app.use('/api/auth',    authRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/courses', courseRoutes);
+app.use('/notifications', notificationRoutes);
+app.use('/admin', adminRoutes);
+app.use('/timetable', timetableRoutes);
 
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);

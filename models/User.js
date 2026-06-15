@@ -76,6 +76,16 @@ const UserSchema = new mongoose.Schema(
     googleId: {
       type: String,
     },
+
+       // ── Admin ───────────────────────────────────────────────────────────────
+    isAdmin: {
+      type:    Boolean,
+      default: false,
+    },
+    isSuperAdmin: {
+      type:    Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );
