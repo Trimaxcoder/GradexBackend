@@ -1,6 +1,6 @@
 const express = require('express');
 const router  = express.Router();
-const auth    = require('../middleware/auth');
+const  { protect: auth }    = require('../middleware/auth');
 const FcmToken = require('../models/FcmToken');
 
 // ── Save / update FCM token for logged-in user ───────────────────────────
