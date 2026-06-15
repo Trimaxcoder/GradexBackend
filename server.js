@@ -68,9 +68,9 @@ app.get('/health', (req, res) =>
 app.use('/api/auth',    authRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/courses', courseRoutes);
-app.use('/notifications', notificationRoutes);
-app.use('/admin', adminRoutes);
-app.use('/timetable', timetableRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/timetable', timetableRoutes);
 
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
