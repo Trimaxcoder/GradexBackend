@@ -9,7 +9,7 @@ const adminRequestSchema = new mongoose.Schema({
   reason:     { type: String, required: true },
   // e.g. student ID card, course rep appointment letter
   proofUrl:   { type: String, default: '' },
-  status:     { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  status:     { type: String, enum: ['pending', 'approved', 'rejected', 'resigned', 'revoked'], default: 'pending' },
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   reviewNote: { type: String, default: '' },
   createdAt:  { type: Date, default: Date.now },

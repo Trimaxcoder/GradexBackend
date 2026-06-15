@@ -151,4 +151,81 @@ router.put('/review/:id', auth, async (req, res, next) => {
   }
 });
 
+// POST /api/admin/resign — admin resigns themselves
+router.post('/resign', auth, async (req, res, next) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(400).json({ message: 'You are not an admin.' });
+    }
+
+    // Remove admin rights
+    await User.findByIdAndUpdate(req.user._id, { isAdmin: false });
+
+    // Update their admin request status
+    await AdminRequest.findOneAndUpdate(
+      { user: req.user._id, status: 'approved' },
+      { status: 'resigned', updatedAt: new Date() }
+    );
+
+    res.json({ message: 'You have successfully resigned as admin.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/admin/revoke/:userId — super admin revokes someone's admin
+router.delete('/revoke/:userId', auth, async (req, res, next) => {
+  try {
+    if (!req.user.isSuperAdmin) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const target = await User.findById(req.params.userId);
+    if (!target) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+    if (!target.isAdmin) {
+      return res.status(400).json({ message: 'User is not an admin.' });
+    }
+
+    // Remove admin rights
+    await User.findByIdAndUpdate(req.params.userId, { isAdmin: false });
+
+    // Update their admin request status
+    await AdminRequest.findOneAndUpdate(
+      { user: req.params.userId, status: 'approved' },
+      { status: 'revoked', updatedAt: new Date() }
+    );
+
+    // Notify the revoked user
+    const fcmDoc = await FcmToken.findOne({ user: req.params.userId });
+    if (fcmDoc?.token) {
+      await sendToTokens(
+        [fcmDoc.token],
+        '⚠️ Admin Access Revoked',
+        'Your course rep admin access has been revoked.',
+        { type: 'admin_revoked' }
+      );
+    }
+
+    res.json({ message: 'Admin access revoked.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/admin/all — super admin sees all current admins
+router.get('/all', auth, async (req, res, next) => {
+  try {
+    if (!req.user.isSuperAdmin) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    const admins = await User.find({ isAdmin: true })
+      .select('email profile createdAt');
+    res.json({ admins });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
