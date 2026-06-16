@@ -80,6 +80,38 @@ router.put('/lecture/:id', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// PUT /timetable/lecture/:id/emergency — admin toggles emergency status, notifies all students
+router.put('/lecture/:id/emergency', auth, async (req, res, next) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ message: 'Admins only' });
+    }
+    const entry = await LectureEntry.findById(req.params.id);
+    if (!entry) return res.status(404).json({ message: 'Not found' });
+
+    entry.isEmergency = !entry.isEmergency;
+    entry.updatedAt = new Date();
+    await entry.save();
+
+    // Notify all students in this dept/level
+    const { school, faculty, department, level } = entry;
+    const tokens = await FcmToken.find({ school, faculty, department, level });
+    const tokenList = tokens.map(t => t.token).filter(Boolean);
+    if (tokenList.length > 0) {
+      await sendToTokens(
+        tokenList,
+        entry.isEmergency ? '🚨 Emergency Class Alert' : 'Emergency Status Removed',
+        entry.isEmergency
+          ? `${entry.courseCode}: ${entry.day} ${entry.startTime}–${entry.endTime}${entry.venue ? ' @ ' + entry.venue : ''} is now marked as an emergency class!`
+          : `${entry.courseCode} is no longer marked as emergency.`,
+        { type: 'emergency_toggle', entryId: String(entry._id) }
+      );
+    }
+
+    res.json({ entry });
+  } catch (err) { next(err); }
+});
+
 // DELETE /timetable/lecture/:id — admin deletes
 router.delete('/lecture/:id', auth, async (req, res, next) => {
   try {

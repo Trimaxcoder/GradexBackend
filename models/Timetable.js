@@ -17,6 +17,7 @@ const lectureSchema = new mongoose.Schema({
   faculty:     { type: String, default: '' },
   department:  { type: String, default: '' },
   level:       { type: String, default: '' },
+  isEmergency: { type: Boolean, default: false },
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedAt:   { type: Date, default: Date.now },
 }, { timestamps: true });
