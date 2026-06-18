@@ -5,15 +5,21 @@ const FcmToken = require('../models/FcmToken');
 const { sendToTokens } = require('../config/firebase');
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const WAT_OFFSET_HOURS = 1; // West Africa Time = UTC+1
+
+function getWATNow() {
+  const now = new Date();
+  // Add 1 hour to convert server UTC time to WAT
+  return new Date(now.getTime() + WAT_OFFSET_HOURS * 60 * 60 * 1000);
+}
 
 function startReminderCron() {
-  // Runs every minute
   cron.schedule('* * * * *', async () => {
     try {
-      const now = new Date();
-      const todayName = DAY_NAMES[now.getDay()];
-      const todayDateStr = now.toISOString().split('T')[0]; // "2026-06-22"
-      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      const watNow = getWATNow();
+      const todayName = DAY_NAMES[watNow.getUTCDay()];
+      const todayDateStr = watNow.toISOString().split('T')[0];
+      const nowMinutes = watNow.getUTCHours() * 60 + watNow.getUTCMinutes();
 
       const reminders = await ClassReminder.find({ enabled: true })
         .populate('lecture')
@@ -22,7 +28,7 @@ function startReminderCron() {
       for (const reminder of reminders) {
         const lecture = reminder.lecture;
         if (!lecture || lecture.day !== todayName) continue;
-        if (reminder.lastFiredDate === todayDateStr) continue; // already fired today
+        if (reminder.lastFiredDate === todayDateStr) continue;
 
         const [h, m] = lecture.startTime.split(':').map(Number);
         const classMinutes = h * 60 + m;
@@ -34,7 +40,7 @@ function startReminderCron() {
             await sendToTokens(
               [fcmDoc.token],
               '⏰ Class Reminder',
-              `${lecture.courseCode} starts in ${reminder.minutesBefore} min${reminder.venue ? ' @ ' + lecture.venue : ''}`,
+              `${lecture.courseCode} starts in ${reminder.minutesBefore} min${lecture.venue ? ' @ ' + lecture.venue : ''}`,
               { type: 'class_reminder', lectureId: String(lecture._id) }
             );
           }
@@ -47,7 +53,7 @@ function startReminderCron() {
     }
   });
 
-  console.log('⏰ Reminder cron job started');
+  console.log('⏰ Reminder cron job started (WAT timezone)');
 }
 
 module.exports = { startReminderCron };
