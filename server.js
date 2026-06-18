@@ -14,9 +14,12 @@ const { errorHandler, notFound } = require('./middleware/errorHandler');
 const notificationRoutes = require('./routes/notifications');
 const adminRoutes  = require('./routes/admin');
 const timetableRoutes  = require('./routes/timetable');
+const reminderRoutes = require('./routes/reminders');
+const { startReminderCron } = require('./jobs/reminderCron');
 
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
 connectDB();
+startReminderCron();
 
 const app = express();
 app.set('trust proxy', 1);
@@ -71,6 +74,7 @@ app.use('/api/courses', courseRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/timetable', timetableRoutes);
+app.use('/api/reminders', reminderRoutes);
 
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
