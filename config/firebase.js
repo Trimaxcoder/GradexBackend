@@ -2,13 +2,14 @@ const admin = require('firebase-admin');
 
 let initialized = false;
 
+const APP_ICON_URL = 'https://cgpa-calculator-8e6ae.web.app/icons/Icon-192.png'; // ← your hosted icon
+
 function getFirebaseAdmin() {
   if (!initialized) {
     admin.initializeApp({
       credential: admin.credential.cert({
         projectId:    process.env.FIREBASE_PROJECT_ID,
         clientEmail:  process.env.FIREBASE_CLIENT_EMAIL,
-        // Replace \n in env var with actual newlines
         privateKey:   process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
       }),
     });
@@ -29,12 +30,27 @@ async function sendToTokens(tokens, title, body, data = {}) {
 
   const fb = getFirebaseAdmin();
 
-  // Send in batches of 500 (FCM limit)
   const batchSize = 500;
   for (let i = 0; i < tokens.length; i += batchSize) {
     const batch = tokens.slice(i, i + batchSize);
     const message = {
-      notification: { title, body },
+      notification: {
+        title,
+        body,
+        imageUrl: APP_ICON_URL,  // ← shows logo in the notification on supported platforms
+      },
+      android: {
+        notification: {
+          icon: 'ic_notification', // small status bar icon (uses your app's mipmap if set)
+          imageUrl: APP_ICON_URL,
+        },
+      },
+      webpush: {
+        notification: {
+          icon: APP_ICON_URL,     // shown on the left of web notifications
+          image: APP_ICON_URL,
+        },
+      },
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)])
       ),
