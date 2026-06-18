@@ -5,15 +5,17 @@ const FcmToken = require('../models/FcmToken');
 const { sendToTokens } = require('../config/firebase');
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const WAT_OFFSET_HOURS = 1; // West Africa Time = UTC+1
+const WAT_OFFSET_HOURS = 1;
 
 function getWATNow() {
   const now = new Date();
-  // Add 1 hour to convert server UTC time to WAT
   return new Date(now.getTime() + WAT_OFFSET_HOURS * 60 * 60 * 1000);
 }
 
+const ALERT_FIELDS = ['isEmergency', 'isTest', 'isAttendance', 'isCancelled'];
+
 function startReminderCron() {
+  // ── Existing: class reminders ─────────────────────────────────────────
   cron.schedule('* * * * *', async () => {
     try {
       const watNow = getWATNow();
@@ -53,7 +55,45 @@ function startReminderCron() {
     }
   });
 
-  console.log('⏰ Reminder cron job started (WAT timezone)');
+  // ── New: auto-expire alert flags after class endTime ──────────────────
+  cron.schedule('* * * * *', async () => {
+    try {
+      const watNow = getWATNow();
+      const todayName = DAY_NAMES[watNow.getUTCDay()];
+      const nowMinutes = watNow.getUTCHours() * 60 + watNow.getUTCMinutes();
+
+      // Find lectures today with any alert flag on
+      const activeLectures = await LectureEntry.find({
+        day: todayName,
+        $or: ALERT_FIELDS.map(f => ({ [f]: true })),
+      });
+
+      for (const lecture of activeLectures) {
+        const [eh, em] = lecture.endTime.split(':').map(Number);
+        const endMinutes = eh * 60 + em;
+
+        if (nowMinutes >= endMinutes) {
+          // Silently turn off all active flags — no notification
+          let changed = false;
+          for (const field of ALERT_FIELDS) {
+            if (lecture[field]) {
+              lecture[field] = false;
+              changed = true;
+            }
+          }
+          if (changed) {
+            lecture.updatedAt = new Date();
+            await lecture.save();
+            console.log(`Auto-expired alerts for ${lecture.courseCode} (${lecture._id})`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Alert auto-expire cron error:', err);
+    }
+  });
+
+  console.log('⏰ Reminder + alert auto-expire cron jobs started (WAT timezone)');
 }
 
 module.exports = { startReminderCron };
