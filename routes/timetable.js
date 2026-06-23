@@ -138,9 +138,11 @@ router.put("/lecture/:id/emergency", auth, async (req, res, next) => {
       await sendToTokens(
         tokenList,
         entry.isEmergency
-          ? "🚨 Emergency Class Alert"
-          : "Emergency Status Removed",
-        entry.isEmergency ? `...` : `...`,
+          ? "🚨 Class Alert "
+          : "🚨 Class Alert Removed",
+        entry.isEmergency
+          ? `${entry.courseCode} class has started on ${entry.day} at ${entry.startTime}${entry.venue ? " @ " + entry.venue : ""}!`
+          : `${entry.courseCode} class is not on yet.`,
         {
           type: "emergency_toggle",
           entryId: String(entry._id),
@@ -169,7 +171,7 @@ const ALERT_CONFIG = {
     field: "isAttendance",
     onTitle: "✅ Compulsory Attendance",
     onBody: (e) =>
-      `${e.courseCode}: Attendance is now compulsory for ${e.day} ${e.startTime}–${e.endTime}${e.venue ? " @ " + e.venue : ""}`,
+      `${e.courseCode}: Attendance is compulsory for ${e.day} ${e.startTime}–${e.endTime}${e.venue ? " @ " + e.venue : ""}`,
     offTitle: "Attendance Alert Removed",
     offBody: (e) =>
       `${e.courseCode} is no longer marked as compulsory attendance.`,
