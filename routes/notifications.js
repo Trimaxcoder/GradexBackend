@@ -22,6 +22,26 @@ router.post('/token', auth, async (req, res, next) => {
   }
 });
 
+
+// PATCH /notifications/toggle
+router.patch('/toggle', auth, async (req, res, next) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ message: '`enabled` must be a boolean' });
+    }
+    const doc = await FcmToken.findOneAndUpdate(
+      { user: req.user._id },
+      { enabled, updatedAt: new Date() },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ message: 'No FCM token found' });
+    res.json({ message: `Notifications ${enabled ? 'enabled' : 'disabled'}`, enabled });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── Delete token on logout ───────────────────────────────────────────────
 // DELETE /notifications/token
 router.delete('/token', auth, async (req, res, next) => {

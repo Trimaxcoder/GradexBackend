@@ -16,10 +16,12 @@ const adminRoutes  = require('./routes/admin');
 const timetableRoutes  = require('./routes/timetable');
 const reminderRoutes = require('./routes/reminders');
 const { startReminderCron } = require('./jobs/reminderCron');
+const { startMorningDigestJob } = require('./jobs/morningDigest');
 
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
 connectDB();
 startReminderCron();
+startMorningDigestJob();
 
 const app = express();
 app.set('trust proxy', 1);

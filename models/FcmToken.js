@@ -8,6 +8,7 @@ const fcmTokenSchema = new mongoose.Schema({
   faculty:    { type: String, default: '' },
   department: { type: String, default: '' },
   level:      { type: String, default: '' },
+  enabled: { type: Boolean, default: true },
   updatedAt:  { type: Date, default: Date.now },
 });
 
