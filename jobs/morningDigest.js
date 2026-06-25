@@ -15,6 +15,7 @@ async function sendMorningDigests() {
   console.log('Total tokens found:', allTokens.length);
 
   for (const fcmDoc of allTokens) {
+    console.log(`Sending to user: ${fcmDoc.user} | scope: ${fcmDoc.school}|${fcmDoc.faculty}|${fcmDoc.department}|${fcmDoc.level}`);
     const { school, faculty, department, level, token } = fcmDoc;
 
     const lectures = await LectureEntry.find({
