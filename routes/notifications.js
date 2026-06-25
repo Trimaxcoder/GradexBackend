@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const  { protect: auth }    = require('../middleware/auth');
 const FcmToken = require('../models/FcmToken');
+const { sendMorningDigests } = require('../jobs/morningDigest');
 
 // ── Save / update FCM token for logged-in user ───────────────────────────
 // POST /notifications/token
@@ -48,6 +49,17 @@ router.delete('/token', auth, async (req, res, next) => {
   try {
     await FcmToken.findOneAndDelete({ user: req.user._id });
     res.json({ message: 'Token removed' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Temporary: manually trigger morning digest ───────────────────────────
+// GET /notifications/test-digest
+router.get('/test-digest', async (req, res, next) => {
+  try {
+    await sendMorningDigests();
+    res.json({ message: 'Morning digest triggered' });
   } catch (err) {
     next(err);
   }
