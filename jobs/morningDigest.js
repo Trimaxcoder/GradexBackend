@@ -20,6 +20,13 @@ async function sendMorningDigests() {
   const allTokens = await FcmToken.find({
     $or: [{ enabled: true }, { enabled: { $exists: false } }],
   });
+  console.log("Total tokens found:", allTokens.length);
+  console.log(
+    "Tokens:",
+    JSON.stringify(
+      allTokens.map((t) => ({ user: t.user, token: t.token.slice(0, 20) })),
+    ),
+  );
   const scopeMap = new Map(); // key: "school|faculty|dept|level" -> [tokens]
 
   for (const t of allTokens) {
