@@ -42,7 +42,7 @@ async function sendMorningDigests() {
 
 function startMorningDigestJob() {
   // 5am UTC = 6am WAT (Nigeria)
-  cron.schedule('* * * * *', () => {
+  cron.schedule('0 5 * * *', () => {
     sendMorningDigests().catch(err => console.error('Morning digest error:', err));
   });
 }
