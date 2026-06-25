@@ -66,7 +66,7 @@ async function sendMorningDigests() {
 
 function startMorningDigestJob() {
   // Runs every day at 6:00 AM server time
-  cron.schedule('* * * * *', () => {
+  cron.schedule('0 5 * * *', () => {
     sendMorningDigests().catch((err) =>
       console.error("Morning digest error:", err),
     );
