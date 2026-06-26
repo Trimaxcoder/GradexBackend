@@ -5,6 +5,7 @@ const AdminRequest = require("../models/AdminRequest");
 const User = require("../models/User");
 const FcmToken = require("../models/FcmToken");
 const { sendToTokens } = require("../config/firebase");
+const { sendMorningDigests } = require("../jobs/morningDigest");
 
 // POST /api/admin/request
 router.post("/request", auth, async (req, res, next) => {
@@ -234,6 +235,23 @@ router.get("/all", auth, async (req, res, next) => {
       "email profile createdAt",
     );
     res.json({ admins });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+// POST /api/admin/trigger-morning-digest — called by external cron (cron-job.org)
+// No `auth` middleware: the caller is a cron service, not a logged-in user.
+// Protected instead by a shared secret header.
+router.post("/trigger-morning-digest", async (req, res, next) => {
+  try {
+    if (req.headers["x-cron-secret"] !== process.env.CRON_SECRET) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    await sendMorningDigests();
+    res.json({ success: true, message: "Morning digest triggered" });
   } catch (err) {
     next(err);
   }

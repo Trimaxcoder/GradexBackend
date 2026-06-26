@@ -21,7 +21,7 @@ const { startMorningDigestJob } = require('./jobs/morningDigest');
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
 connectDB();
 startReminderCron();
-startMorningDigestJob();
+// startMorningDigestJob(); // disabled — now triggered externally via cron-job.org
 
 const app = express();
 app.set('trust proxy', 1);
