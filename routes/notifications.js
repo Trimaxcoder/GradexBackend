@@ -54,15 +54,5 @@ router.delete('/token', auth, async (req, res, next) => {
   }
 });
 
-// ── Temporary: manually trigger morning digest ───────────────────────────
-// GET /notifications/test-digest
-router.get('/test-digest', async (req, res, next) => {
-  try {
-    await sendMorningDigests();
-    res.json({ message: 'Morning digest triggered' });
-  } catch (err) {
-    next(err);
-  }
-});
 
 module.exports = router;
