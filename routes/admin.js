@@ -83,7 +83,6 @@ router.get("/status", auth, async (req, res, next) => {
     const isAdmin = req.user.isAdmin || false;
     const isSuperAdmin = req.user.isSuperAdmin || false;
     res.json({ isAdmin, isSuperAdmin, request });
-    res.json({ isAdmin, request });
   } catch (err) {
     next(err);
   }
