@@ -5,7 +5,8 @@ const helmet     = require('helmet');
 const cors       = require('cors');
 const morgan     = require('morgan');
 const rateLimit  = require('express-rate-limit');
-
+const path = require('path');
+const appVersionRoutes = require('./routes/appVersion');
 const connectDB  = require('./config/db');
 const authRoutes    = require('./routes/auth');
 const profileRoutes = require('./routes/profile');
@@ -54,6 +55,7 @@ app.use(
 // ── Body parsing ──────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use('/downloads', express.static(path.join(__dirname, 'uploads/downloads')));
 
 // ── Request logging ───────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
@@ -79,6 +81,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/timetable', timetableRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/announcements', announcementRoutes);
+app.use('/api/app-version', appVersionRoutes);
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);
