@@ -1,4 +1,4 @@
-// routes/announcements.js
+// routes/announcements.js  — FULL FILE (adds PUT edit route)
 const express = require('express');
 const router  = express.Router();
 const { protect: auth } = require('../middleware/auth');
@@ -7,8 +7,6 @@ const FcmToken     = require('../models/FcmToken');
 const { sendToTokens } = require('../config/firebase');
 
 // ── POST /api/announcements  (admin only) ────────────────────────────────────
-// Sends a push to every student in the same school/faculty/dept/level (or all
-// levels) and persists the announcement so the app can fetch it as a feed.
 router.post('/', auth, async (req, res, next) => {
   try {
     if (!req.user.isAdmin) {
@@ -24,7 +22,6 @@ router.post('/', auth, async (req, res, next) => {
       return res.status(400).json({ message: 'Message is required' });
     }
 
-    // Pull scope from the admin's own verified profile (same pattern as /request)
     const { school, faculty, department } = req.user.profile || {};
     if (!school || !faculty || !department) {
       return res.status(400).json({
@@ -32,10 +29,8 @@ router.post('/', auth, async (req, res, next) => {
       });
     }
 
-    // "all" means every level in this dept, otherwise target one level
     const targetLevel = level && level !== 'all' ? level : null;
 
-    // ── 1. Persist the announcement ──────────────────────────────────────────
     const announcement = await Announcement.create({
       admin:      req.user._id,
       adminName:  req.user.profile.name || req.user.email,
@@ -47,35 +42,25 @@ router.post('/', auth, async (req, res, next) => {
       message:    message.trim(),
     });
 
-    // ── 2. Find FCM tokens in scope ──────────────────────────────────────────
-    const tokenQuery = {
-      school,
-      faculty,
-      department,
-      enabled: true,
-    };
+    const tokenQuery = { school, faculty, department, enabled: true };
     if (targetLevel) tokenQuery.level = targetLevel;
 
     const fcmDocs = await FcmToken.find(tokenQuery).select('token');
     const tokens  = fcmDocs.map(d => d.token).filter(Boolean);
 
-    // ── 3. Push (fire-and-forget, don't fail the request if FCM errors) ──────
     if (tokens.length > 0) {
       sendToTokens(
         tokens,
         `📢 ${title.trim()}`,
         message.trim(),
-        {
-          type:           'announcement',
-          announcementId: announcement._id.toString(),
-        },
+        { type: 'announcement', announcementId: announcement._id.toString() },
       ).catch(err =>
         console.error('[announcements] FCM sendToTokens error:', err),
       );
     }
 
     res.status(201).json({
-      message:      'Announcement sent',
+      message: 'Announcement sent',
       announcement,
       notifiedCount: tokens.length,
     });
@@ -85,7 +70,6 @@ router.post('/', auth, async (req, res, next) => {
 });
 
 // ── GET /api/announcements  (any logged-in user) ─────────────────────────────
-// Returns announcements scoped to the caller's school/faculty/dept/level.
 router.get('/', auth, async (req, res, next) => {
   try {
     const { school, faculty, department, level } = req.user.profile || {};
@@ -97,7 +81,7 @@ router.get('/', auth, async (req, res, next) => {
       school,
       faculty,
       department,
-      level: { $in: [level, 'all'] },   // their specific level OR broadcast
+      level: { $in: [level, 'all'] },
     })
       .sort({ createdAt: -1 })
       .limit(50)
@@ -109,7 +93,91 @@ router.get('/', auth, async (req, res, next) => {
   }
 });
 
+// ── GET /api/announcements/mine  (admin — their own sent announcements) ─────
+router.get('/mine', auth, async (req, res, next) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const announcements = await Announcement.find({ admin: req.user._id })
+      .sort({ createdAt: -1 })
+      .select('-__v');
+
+    res.json({ announcements });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PUT /api/announcements/:id  (admin, own announcements only) ─────────────
+// Edits title/message. Does NOT re-send a push notification — it's a silent
+// correction. Set resend=true in body if you want it to notify again.
+router.put('/:id', auth, async (req, res, next) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const announcement = await Announcement.findById(req.params.id);
+    if (!announcement) {
+      return res.status(404).json({ message: 'Announcement not found' });
+    }
+    if (announcement.admin.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'You can only edit your own announcements' });
+    }
+
+    const { title, message, resend } = req.body;
+
+    if (title !== undefined) {
+      if (!title.trim()) {
+        return res.status(400).json({ message: 'Title cannot be empty' });
+      }
+      announcement.title = title.trim();
+    }
+    if (message !== undefined) {
+      if (!message.trim()) {
+        return res.status(400).json({ message: 'Message cannot be empty' });
+      }
+      announcement.message = message.trim();
+    }
+    announcement.editedAt = new Date();
+    await announcement.save();
+
+    // Optional: re-notify (off by default — most edits are typo fixes)
+    if (resend === true) {
+      const tokenQuery = {
+        school: announcement.school,
+        faculty: announcement.faculty,
+        department: announcement.department,
+        enabled: true,
+      };
+      if (announcement.level !== 'all') tokenQuery.level = announcement.level;
+
+      const fcmDocs = await FcmToken.find(tokenQuery).select('token');
+      const tokens  = fcmDocs.map(d => d.token).filter(Boolean);
+
+      if (tokens.length > 0) {
+        sendToTokens(
+          tokens,
+          `📢 (Updated) ${announcement.title}`,
+          announcement.message,
+          { type: 'announcement', announcementId: announcement._id.toString() },
+        ).catch(err =>
+          console.error('[announcements] FCM resend error:', err),
+        );
+      }
+    }
+
+    res.json({ message: 'Announcement updated', announcement });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── DELETE /api/announcements/:id  (admin, own announcements only) ───────────
+// This is a HARD delete — removes it for everyone, since the admin is
+// retracting it entirely (e.g. posted by mistake, wrong info).
 router.delete('/:id', auth, async (req, res, next) => {
   try {
     if (!req.user.isAdmin) {
