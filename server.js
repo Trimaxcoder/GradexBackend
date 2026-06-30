@@ -15,6 +15,7 @@ const notificationRoutes = require('./routes/notifications');
 const adminRoutes  = require('./routes/admin');
 const timetableRoutes  = require('./routes/timetable');
 const reminderRoutes = require('./routes/reminders');
+const announcementRoutes = require('./routes/announcements');
 const { startReminderCron } = require('./jobs/reminderCron');
 const { startMorningDigestJob } = require('./jobs/morningDigest');
 
@@ -77,7 +78,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/timetable', timetableRoutes);
 app.use('/api/reminders', reminderRoutes);
-
+app.use('/api/announcements', announcementRoutes);
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);
