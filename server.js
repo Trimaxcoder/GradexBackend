@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const http       = require('http');
 const express    = require('express');
 const helmet     = require('helmet');
 const cors       = require('cors');
@@ -17,6 +18,8 @@ const adminRoutes  = require('./routes/admin');
 const timetableRoutes  = require('./routes/timetable');
 const reminderRoutes = require('./routes/reminders');
 const announcementRoutes = require('./routes/announcements');
+const classRoutes = require('./routes/classes');
+const { initSocket } = require('./socket');
 const { startReminderCron } = require('./jobs/reminderCron');
 const { startMorningDigestJob } = require('./jobs/morningDigest');
 
@@ -82,25 +85,22 @@ app.use('/api/timetable', timetableRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/app-version', appVersionRoutes);
+app.use('/api/classes', classRoutes);
+
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);
 
+// ── HTTP server + real-time (Socket.IO shares the same port) ──────────────────
+const server = http.createServer(app);
+const io = initSocket(server);
+app.set('io', io); // routes use this to broadcast events
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 5000;
-app.listen(PORT, '0.0.0.0',  () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀  Server running on port ${PORT} [${process.env.NODE_ENV}]`);
   console.log(`   Health check → http://localhost:${PORT}/health`);
-});
-
-
-app.get('/api/superadmin-token-temp', async (req, res) => {
-  const User = require('./models/User');
-  const { generateAccessToken } = require('./middleware/auth');
-  const user = await User.findOne({ isSuperAdmin: true });
-  if (!user) return res.json({ message: 'No super admin found' });
-  const token = generateAccessToken(user._id);
-  res.json({ token });
 });
 
 module.exports = app;
