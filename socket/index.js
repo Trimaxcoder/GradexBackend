@@ -8,6 +8,7 @@ const ClassMessage = require('../models/ClassMessage');
 const AnonSession  = require('../models/AnonSession');
 const AnonPost     = require('../models/AnonPost');
 const anonToken    = require('../utils/anonToken');
+const { notifyClassMessage } = require('../utils/classPush');
 
 const isId = mongoose.isValidObjectId;
 
@@ -144,6 +145,15 @@ function initSocket(httpServer) {
       // clientId lets the sender match this to its optimistic "sending..." bubble
       io.to(`class:${classId}`).emit('message:new', { ...payload, clientId: clientId || null });
       reply({ ok: true, message: payload });
+
+      // Push to members who don't have this class open right now.
+      // Not awaited: the sender never waits for it, and it never throws.
+      notifyClassMessage(io, {
+        classId,
+        senderId:   userId,
+        senderName: name,
+        text:       clean,
+      });
     }));
 
     // ── Delete a message (own message, or any message if class admin) ─────────

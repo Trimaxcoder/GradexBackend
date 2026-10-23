@@ -8,6 +8,11 @@ const Class        = require('../models/Class');
 const ClassMessage = require('../models/ClassMessage');
 const AnonSession  = require('../models/AnonSession');
 const AnonPost     = require('../models/AnonPost');
+const {
+  notifyAnonOpened,
+  notifyJoinRequest,
+  notifyJoinApproved,
+} = require('../utils/classPush');
 
 const router = express.Router();
 router.use(protect);
@@ -184,9 +189,15 @@ router.post('/join', joinLimiter, wrap(async (req, res) => {
   if (status === 'active') {
     emitToClass(req, cls._id, 'member:joined', payload);
   } else {
-    fresh.members
-      .filter((m) => m.role === 'admin' && m.status === 'active')
-      .forEach((m) => emitToUser(req, m.user, 'member:pending', payload));
+    const admins = fresh.members.filter((m) => m.role === 'admin' && m.status === 'active');
+    admins.forEach((m) => emitToUser(req, m.user, 'member:pending', payload));
+
+    notifyJoinRequest({
+      classId:       cls._id,
+      className:     cls.name,
+      requesterName: name,
+      adminIds:      admins.map((m) => m.user),
+    });
   }
 
   res.status(201).json({ success: true, status, class: classSummary(fresh, uid) });
@@ -357,6 +368,7 @@ router.put('/:id/members/:userId', loadClass, requireAdmin, wrap(async (req, res
       classId: String(cls._id),
       user: { id: String(targetId), name: (u && u.profile && u.profile.name) || 'Student' },
     });
+    notifyJoinApproved({ userId: targetId, classId: cls._id, className: cls.name });
   } else {
     emitToClass(req, cls._id, 'member:updated', {
       classId: String(cls._id),
@@ -504,6 +516,14 @@ router.post('/:id/anon', loadClass, requireAdmin, wrap(async (req, res) => {
 
   emitToClass(req, cls._id, 'anon:opened', session.toClient());
   res.status(201).json({ success: true, session: session.toClient() });
+
+  // One push that a session opened. Individual anonymous posts never push.
+  notifyAnonOpened(req.app.get('io'), {
+    classId:   cls._id,
+    className: cls.name,
+    prompt:    session.prompt,
+    byUserId:  req.user._id,
+  });
 }));
 
 // POST /api/classes/:id/anon/:sid/close
