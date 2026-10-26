@@ -13,6 +13,7 @@ const {
   notifyJoinRequest,
   notifyJoinApproved,
 } = require('../utils/classPush');
+const { isConfigured, signUpload } = require('../utils/cloudinary');
 
 const router = express.Router();
 router.use(protect);
@@ -98,6 +99,17 @@ const joinLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: { success: false, message: 'Too many join attempts. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// 30 upload permissions per 10 minutes per student
+const uploadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => String(req.user && req.user._id),
+  validate: false,
+  message: { success: false, message: 'Too many uploads. Try again in a few minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -418,6 +430,20 @@ router.delete('/:id/members/:userId', loadClass, wrap(async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 //  CHAT HISTORY, PINS, REPORTS  (sending and deleting happen over the socket)
 // ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/classes/:id/upload-signature
+// Gives the app a short-lived, class-specific permission to upload one file
+// (photo, document or voice note) straight to Cloudinary.
+router.post('/:id/upload-signature', uploadLimiter, loadClass, requireMember, wrap(async (req, res) => {
+  if (!isConfigured()) return fail(res, 503, 'File uploads are not set up yet.');
+  if (req.cls.archived) return fail(res, 403, 'This class has been archived.');
+  if (req.member.muted) return fail(res, 403, 'You are muted in this class.');
+  if (req.cls.chatLocked && req.member.role !== 'admin') {
+    return fail(res, 403, 'Only admins can send messages right now.');
+  }
+
+  res.json({ success: true, upload: signUpload(String(req.cls._id)) });
+}));
 
 // GET /api/classes/:id/messages?before=<messageId>&limit=30
 router.get('/:id/messages', loadClass, requireMember, wrap(async (req, res) => {

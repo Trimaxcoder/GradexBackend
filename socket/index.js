@@ -9,6 +9,7 @@ const AnonSession  = require('../models/AnonSession');
 const AnonPost     = require('../models/AnonPost');
 const anonToken    = require('../utils/anonToken');
 const { notifyClassMessage } = require('../utils/classPush');
+const { cleanAttachment, attachmentLabel, destroyAsset } = require('../utils/cloudinary');
 
 const isId = mongoose.isValidObjectId;
 
@@ -114,10 +115,18 @@ function initSocket(httpServer) {
     }));
 
     // ── Send a chat message ───────────────────────────────────────────────────
-    socket.on('message:send', handle(async ({ classId, text, replyTo, clientId }, reply) => {
+    socket.on('message:send', handle(async ({ classId, text, replyTo, clientId, attachment }, reply) => {
       const clean = typeof text === 'string' ? text.trim() : '';
-      if (!clean || clean.length > 2000) return reply({ ok: false, error: 'INVALID_TEXT' });
-      if (!chatLimiter(userId))          return reply({ ok: false, error: 'RATE_LIMITED' });
+
+      // A message is text, an attachment (photo / file / voice note), or both
+      let att = null;
+      if (attachment) {
+        att = cleanAttachment(attachment, classId);
+        if (!att) return reply({ ok: false, error: 'INVALID_ATTACHMENT' });
+      }
+
+      if ((!clean && !att) || clean.length > 2000) return reply({ ok: false, error: 'INVALID_TEXT' });
+      if (!chatLimiter(userId))                    return reply({ ok: false, error: 'RATE_LIMITED' });
 
       const m = await loadMembership(classId, userId);
       if (!m)                                   return reply({ ok: false, error: 'NOT_A_MEMBER' });
@@ -137,6 +146,7 @@ function initSocket(httpServer) {
         class:   classId,
         sender:  userId,
         text:    clean,
+        attachment: att,
         replyTo: replyId,
       });
       await msg.populate(ClassMessage.POPULATE);
@@ -152,7 +162,7 @@ function initSocket(httpServer) {
         classId,
         senderId:   userId,
         senderName: name,
-        text:       clean,
+        text:       clean || attachmentLabel(att),
       });
     }));
 
@@ -169,10 +179,16 @@ function initSocket(httpServer) {
       const isOwn = String(msg.sender) === userId;
       if (!isOwn && m.member.role !== 'admin') return reply({ ok: false, error: 'FORBIDDEN' });
 
-      msg.deleted = true;
-      msg.text    = '';
-      msg.pinned  = false;
+      const oldFileUrl = msg.attachment && msg.attachment.url;
+
+      msg.deleted    = true;
+      msg.text       = '';
+      msg.attachment = null;
+      msg.pinned     = false;
       await msg.save();
+
+      // Remove the file from Cloudinary too (best effort, not awaited)
+      if (oldFileUrl) destroyAsset(oldFileUrl);
 
       io.to(`class:${msg.class}`).emit('message:deleted', {
         id:      String(msg._id),
