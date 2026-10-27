@@ -10,6 +10,7 @@ const AnonPost     = require('../models/AnonPost');
 const anonToken    = require('../utils/anonToken');
 const { notifyClassMessage } = require('../utils/classPush');
 const { cleanAttachment, attachmentLabel, destroyAsset } = require('../utils/cloudinary');
+const { markDelivered, markRead } = require('../utils/receipts');
 
 const isId = mongoose.isValidObjectId;
 
@@ -41,6 +42,7 @@ const createLimiter = (max, windowMs) => {
 
 const chatLimiter = createLimiter(10, 10 * 1000); // 10 chat messages / 10 s
 const anonLimiter = createLimiter(10, 60 * 1000); // 10 anon posts / minute / user
+const readLimiter = createLimiter(30, 10 * 1000); // 30 "I've read up to here" / 10 s
 
 // ── Membership lookup (loads only this user's member entry) ───────────────────
 async function loadMembership(classId, userId) {
@@ -156,6 +158,17 @@ function initSocket(httpServer) {
       io.to(`class:${classId}`).emit('message:new', { ...payload, clientId: clientId || null });
       reply({ ok: true, message: payload });
 
+      // Everyone else who has this class open has now received it
+      (async () => {
+        try {
+          const live = await io.in(`class:${classId}`).fetchSockets();
+          const ids  = [...new Set(live.map((s) => s.data.userId))].filter((id) => id !== userId);
+          await markDelivered(io, classId, ids, msg._id);
+        } catch (err) {
+          console.error('delivery receipts failed:', err.message);
+        }
+      })();
+
       // Push to members who don't have this class open right now.
       // Not awaited: the sender never waits for it, and it never throws.
       notifyClassMessage(io, {
@@ -164,6 +177,20 @@ function initSocket(httpServer) {
         senderName: name,
         text:       clean || attachmentLabel(att),
       });
+    }));
+
+    // ── "I have read up to this message" ──────────────────────────────────────
+    socket.on('message:read', handle(async ({ classId, upToId }, reply) => {
+      if (!isId(classId) || !isId(upToId)) return reply({ ok: false, error: 'INVALID' });
+      if (!readLimiter(userId))            return reply({ ok: false, error: 'RATE_LIMITED' });
+      if (!socket.rooms.has(`class:${classId}`)) return reply({ ok: false, error: 'NOT_IN_ROOM' });
+
+      // Only real messages of this class count (stops made-up future ids)
+      const exists = await ClassMessage.exists({ _id: upToId, class: classId });
+      if (!exists) return reply({ ok: false, error: 'NOT_FOUND' });
+
+      await markRead(io, classId, userId, upToId);
+      reply({ ok: true });
     }));
 
     // ── Delete a message (own message, or any message if class admin) ─────────

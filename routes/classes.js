@@ -14,6 +14,7 @@ const {
   notifyJoinApproved,
 } = require('../utils/classPush');
 const { isConfigured, signUpload } = require('../utils/cloudinary');
+const { markDelivered, receiptsFor } = require('../utils/receipts');
 
 const router = express.Router();
 router.use(protect);
@@ -232,6 +233,7 @@ router.get('/:id', loadClass, requireMember, wrap(async (req, res) => {
     class: classSummary(cls, req.user._id),
     activeAnonSession: open ? open.toClient() : null,
     pinned: pinned.map((m) => m.toClient()),
+    receipts: receiptsFor(cls, req.user._id),
   });
 }));
 
@@ -460,6 +462,11 @@ router.get('/:id/messages', loadClass, requireMember, wrap(async (req, res) => {
   const page    = rows.slice(0, limit).reverse(); // oldest first for the chat view
 
   res.json({ success: true, hasMore, messages: page.map((m) => m.toClient()) });
+
+  // Opening the chat means the newest messages have reached this student
+  if (!req.query.before && rows.length) {
+    markDelivered(req.app.get('io'), req.cls._id, [req.user._id], rows[0]._id);
+  }
 }));
 
 // PUT /api/classes/:id/messages/:mid/pin   body: { pinned: true|false }

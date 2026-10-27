@@ -23,6 +23,9 @@ const MemberSchema = new mongoose.Schema(
     status:   { type: String, enum: ['active', 'pending'], default: 'active' },
     muted:    { type: Boolean, default: false },
     joinedAt: { type: Date, default: Date.now },
+    // Receipts: the newest chat message that reached / was seen by this member
+    lastDelivered: { type: ObjectId, default: null },
+    lastRead:      { type: ObjectId, default: null },
   },
   { _id: false }
 );
