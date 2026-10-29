@@ -73,6 +73,18 @@ const UserSchema = new mongoose.Schema(
       select: false,
     },
 
+    // ── Class username ──────────────────────────────────────────────────────
+    // Optional. When set, this is the name other people see in classes
+    // instead of the full name. Lowercase letters, numbers, _ and . only.
+    username: {
+      type:      String,
+      lowercase: true,
+      trim:      true,
+      minlength: 3,
+      maxlength: 20,
+      match:     /^[a-z0-9_.]+$/,
+    },
+
     // ── Google OAuth ────────────────────────────────────────────────────────
     googleId: {
       type: String,
@@ -89,6 +101,12 @@ const UserSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+// Usernames must be unique, but only users who set one are counted
+UserSchema.index(
+  { username: 1 },
+  { unique: true, partialFilterExpression: { username: { $type: 'string' } } }
 );
 
 // ── Pre-save: hash password ───────────────────────────────────────────────────

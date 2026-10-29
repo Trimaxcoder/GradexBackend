@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { displayName } = require('../utils/displayName');
 
 const { ObjectId } = mongoose.Schema.Types;
 
@@ -45,7 +46,7 @@ const labelFor = (m) => {
 // Shape sent to the Flutter app. Needs `sender` and `replyTo` populated
 // (use ClassMessage.POPULATE) so names can be included.
 MessageSchema.methods.toClient = function () {
-  const nameOf = (u) => (u && u.profile && u.profile.name) || 'Student';
+  const nameOf = (u) => displayName(u);
   const idOf   = (v) => String(v && v._id ? v._id : v);
 
   let replyTo = null;
@@ -79,11 +80,11 @@ MessageSchema.methods.toClient = function () {
 const ClassMessage = mongoose.model('ClassMessage', MessageSchema);
 
 ClassMessage.POPULATE = [
-  { path: 'sender', select: 'profile.name' },
+  { path: 'sender', select: 'profile.name username' },
   {
     path:     'replyTo',
     select:   'text deleted sender attachment',
-    populate: { path: 'sender', select: 'profile.name' },
+    populate: { path: 'sender', select: 'profile.name username' },
   },
 ];
 

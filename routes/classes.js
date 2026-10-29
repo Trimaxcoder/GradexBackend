@@ -15,6 +15,7 @@ const {
 } = require('../utils/classPush');
 const { isConfigured, signUpload } = require('../utils/cloudinary');
 const { markDelivered, receiptsFor } = require('../utils/receipts');
+const { displayName } = require('../utils/displayName');
 
 const router = express.Router();
 router.use(protect);
@@ -196,7 +197,7 @@ router.post('/join', joinLimiter, wrap(async (req, res) => {
   );
 
   const fresh = await Class.findById(cls._id);
-  const name  = (req.user.profile && req.user.profile.name) || 'A student';
+  const name  = displayName(req.user, 'A student');
   const payload = { classId: String(cls._id), user: { id: String(uid), name } };
 
   if (status === 'active') {
@@ -310,7 +311,7 @@ router.get('/:id/members', loadClass, requireMember, wrap(async (req, res) => {
   );
 
   const users = await User.find({ _id: { $in: visible.map((m) => m.user) } })
-    .select('profile.name profile.department profile.level');
+    .select('profile.name username profile.department profile.level');
   const byId = new Map(users.map((u) => [String(u._id), u]));
 
   const members = visible.map((m) => {
@@ -318,7 +319,7 @@ router.get('/:id/members', loadClass, requireMember, wrap(async (req, res) => {
     const p = (u && u.profile) || {};
     return {
       userId:     String(m.user),
-      name:       p.name || 'Student',
+      name:       displayName(u),
       department: p.department || '',
       level:      p.level || '',
       role:       m.role,
@@ -376,11 +377,11 @@ router.put('/:id/members/:userId', loadClass, requireAdmin, wrap(async (req, res
   await Class.updateOne({ _id: cls._id, 'members.user': oid(targetId) }, { $set: update });
 
   if (action === 'approve') {
-    const u = await User.findById(targetId).select('profile.name');
+    const u = await User.findById(targetId).select('profile.name username');
     emitToUser(req, targetId, 'class:approved', { classId: String(cls._id) });
     emitToClass(req, cls._id, 'member:joined', {
       classId: String(cls._id),
-      user: { id: String(targetId), name: (u && u.profile && u.profile.name) || 'Student' },
+      user: { id: String(targetId), name: displayName(u) },
     });
     notifyJoinApproved({ userId: targetId, classId: cls._id, className: cls.name });
   } else {

@@ -11,6 +11,7 @@ const anonToken    = require('../utils/anonToken');
 const { notifyClassMessage } = require('../utils/classPush');
 const { cleanAttachment, attachmentLabel, destroyAsset } = require('../utils/cloudinary');
 const { markDelivered, markRead } = require('../utils/receipts');
+const { displayName } = require('../utils/displayName');
 
 const isId = mongoose.isValidObjectId;
 
@@ -86,11 +87,11 @@ function initSocket(httpServer) {
       if (!token) return next(new Error('AUTH_REQUIRED'));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('profile.name');
+      const user = await User.findById(decoded.id).select('profile.name username');
       if (!user) return next(new Error('AUTH_INVALID'));
 
       socket.data.userId = String(user._id);
-      socket.data.name   = (user.profile && user.profile.name) || 'Student';
+      socket.data.name   = displayName(user);
       next();
     } catch (err) {
       next(new Error(err.name === 'TokenExpiredError' ? 'AUTH_EXPIRED' : 'AUTH_INVALID'));
@@ -174,7 +175,7 @@ function initSocket(httpServer) {
       notifyClassMessage(io, {
         classId,
         senderId:   userId,
-        senderName: name,
+        senderName: displayName(msg.sender),
         text:       clean || attachmentLabel(att),
       });
     }));

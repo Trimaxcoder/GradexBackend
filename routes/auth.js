@@ -191,6 +191,74 @@ router.get("/me", protect, (req, res) => {
   res.json({ success: true, user: req.user });
 });
 
+// ── GET /api/auth/username ────────────────────────────────────────────────────
+// The username I have set for classes ('' when none).
+router.get("/username", protect, async (req, res, next) => {
+  try {
+    const u = await User.findById(req.user._id).select("username");
+    res.json({ success: true, username: (u && u.username) || "" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/auth/username ───────────────────────────────────────────────────
+// Body: { username: "trimax" }. An empty username removes it, so classes show
+// the full name again.
+const USERNAME_RE = /^[a-z0-9_.]{3,20}$/;
+const RESERVED_USERNAMES = [
+  "admin", "administrator", "moderator", "support", "system", "staff",
+  "schoollife", "gradex", "anonymous", "anon", "student", "everyone", "all",
+];
+
+router.post("/username", protect, async (req, res, next) => {
+  try {
+    const raw = String(req.body.username || "").trim().toLowerCase();
+
+    // Empty = go back to showing the full name
+    if (raw === "") {
+      await User.updateOne({ _id: req.user._id }, { $unset: { username: 1 } });
+      return res.json({ success: true, username: "" });
+    }
+
+    if (!USERNAME_RE.test(raw)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Username must be 3 to 20 characters: letters, numbers, _ or . only.",
+      });
+    }
+    if (RESERVED_USERNAMES.includes(raw)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "That username is not available." });
+    }
+
+    const taken = await User.exists({ username: raw, _id: { $ne: req.user._id } });
+    if (taken) {
+      return res
+        .status(409)
+        .json({ success: false, message: "That username is already taken." });
+    }
+
+    try {
+      await User.updateOne({ _id: req.user._id }, { $set: { username: raw } });
+    } catch (err) {
+      // Two people saved the same username at the same moment
+      if (err && err.code === 11000) {
+        return res
+          .status(409)
+          .json({ success: false, message: "That username is already taken." });
+      }
+      throw err;
+    }
+
+    res.json({ success: true, username: raw });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── POST /api/auth/forgot-password ───────────────────────────────────────────
 router.post("/forgot-password", authLimiter, async (req, res, next) => {
   try {
