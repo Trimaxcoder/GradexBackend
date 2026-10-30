@@ -116,6 +116,17 @@ const uploadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// 40 searches per minute per student
+const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 40,
+  keyGenerator: (req) => String(req.user && req.user._id),
+  validate: false,
+  message: { success: false, message: 'Too many searches. Try again in a moment.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  CLASSES
 // ══════════════════════════════════════════════════════════════════════════════
@@ -601,6 +612,68 @@ router.get('/:id/messages', loadClass, requireMember, wrap(async (req, res) => {
   if (!req.query.before && rows.length) {
     markDelivered(req.app.get('io'), req.cls._id, [req.user._id], rows[0]._id);
   }
+}));
+
+// GET /api/classes/:id/search?q=text&before=<messageId>&limit=30
+// Finds messages whose text (or file name) contains q. Newest first.
+router.get('/:id/search', searchLimiter, loadClass, requireMember, wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2)  return fail(res, 400, 'Type at least 2 characters to search.');
+  if (q.length > 60) return fail(res, 400, 'That search is too long.');
+
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 30, 1), 50);
+
+  // Treat what the student typed as plain text, never as a pattern
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+  const filter = {
+    class:   req.cls._id,
+    deleted: false,
+    $or:     [{ text: re }, { 'attachment.name': re }],
+  };
+  if (req.query.before && isId(req.query.before)) filter._id = { $lt: req.query.before };
+
+  const rows = await ClassMessage.find(filter)
+    .sort({ _id: -1 })
+    .limit(limit + 1)
+    .maxTimeMS(5000)
+    .populate(ClassMessage.POPULATE);
+
+  const hasMore = rows.length > limit;
+  res.json({
+    success: true,
+    hasMore,
+    messages: rows.slice(0, limit).map((m) => m.toClient()),
+  });
+}));
+
+// GET /api/classes/:id/messages/:mid/context?n=15
+// One message with the messages just before and after it (oldest first).
+router.get('/:id/messages/:mid/context', loadClass, requireMember, wrap(async (req, res) => {
+  if (!isId(req.params.mid)) return fail(res, 400, 'Invalid message id.');
+  const n = Math.min(Math.max(parseInt(req.query.n) || 15, 1), 30);
+
+  const target = await ClassMessage.findOne({ _id: req.params.mid, class: req.cls._id })
+    .populate(ClassMessage.POPULATE);
+  if (!target) return fail(res, 404, 'Message not found.');
+
+  const [before, after] = await Promise.all([
+    ClassMessage.find({ class: req.cls._id, _id: { $lt: target._id } })
+      .sort({ _id: -1 })
+      .limit(n)
+      .populate(ClassMessage.POPULATE),
+    ClassMessage.find({ class: req.cls._id, _id: { $gt: target._id } })
+      .sort({ _id: 1 })
+      .limit(n)
+      .populate(ClassMessage.POPULATE),
+  ]);
+
+  const all = [...before.reverse(), target, ...after];
+  res.json({
+    success: true,
+    targetId: String(target._id),
+    messages: all.map((m) => m.toClient()),
+  });
 }));
 
 // PUT /api/classes/:id/messages/:mid/pin   body: { pinned: true|false }
