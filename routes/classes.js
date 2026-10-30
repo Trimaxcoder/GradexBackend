@@ -238,6 +238,81 @@ router.get('/:id', loadClass, requireMember, wrap(async (req, res) => {
   });
 }));
 
+// GET /api/classes/:id/info  → everything the class info screen shows
+router.get('/:id/info', loadClass, requireMember, wrap(async (req, res) => {
+  const { cls } = req;
+
+  const adminMembers = cls.members.filter((m) => m.status === 'active' && m.role === 'admin');
+  const ownerId      = String(cls.owner);
+  const adminIds     = adminMembers.map((m) => String(m.user));
+
+  const people = await User.find({ _id: { $in: [...new Set([ownerId, ...adminIds])] } })
+    .select('profile.name username');
+  const byId = new Map(people.map((u) => [String(u._id), u]));
+
+  // Photos, files and voice notes that have not been deleted
+  const mediaMatch = {
+    class:            cls._id,
+    deleted:          false,
+    'attachment.url': { $exists: true, $ne: '' },
+  };
+
+  const [counts, recentImages, recentFiles, pinnedCount] = await Promise.all([
+    ClassMessage.aggregate([
+      { $match: mediaMatch },
+      { $group: { _id: '$attachment.kind', n: { $sum: 1 } } },
+    ]),
+    ClassMessage.find({ ...mediaMatch, 'attachment.kind': 'image' })
+      .sort({ _id: -1 })
+      .limit(8)
+      .select('attachment'),
+    ClassMessage.find({ ...mediaMatch, 'attachment.kind': 'file' })
+      .sort({ _id: -1 })
+      .limit(5)
+      .select('attachment'),
+    ClassMessage.countDocuments({ class: cls._id, pinned: true, deleted: false }),
+  ]);
+
+  const countOf = (kind) => {
+    const row = counts.find((c) => c._id === kind);
+    return row ? row.n : 0;
+  };
+
+  res.json({
+    success: true,
+    info: {
+      createdAt: cls.createdAt,
+      createdBy: {
+        id:   ownerId,
+        name: displayName(byId.get(ownerId), 'Former member'),
+      },
+      admins: adminIds.map((id) => ({
+        userId:  id,
+        name:    displayName(byId.get(id)),
+        isOwner: id === ownerId,
+      })),
+      myJoinedAt: req.member.joinedAt,
+      pinnedCount,
+      media: {
+        images: countOf('image'),
+        files:  countOf('file'),
+        audio:  countOf('audio'),
+        recentImages: recentImages.map((m) => ({
+          id:  String(m._id),
+          url: m.attachment.url,
+        })),
+        recentFiles: recentFiles.map((m) => ({
+          id:   String(m._id),
+          name: m.attachment.name,
+          url:  m.attachment.url,
+          size: m.attachment.size,
+          mime: m.attachment.mime,
+        })),
+      },
+    },
+  });
+}));
+
 // PUT /api/classes/:id  → admin edits class settings
 router.put('/:id', loadClass, requireAdmin, wrap(async (req, res) => {
   const { cls } = req;
