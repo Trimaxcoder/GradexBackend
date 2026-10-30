@@ -5,27 +5,27 @@
 //
 // Rules:
 //  - Chat messages: never push the sender, never push anyone who currently has
-//    that class open (they already see the message live), and send each person
-//    at most one push per class every PUSH_GAP_MS so a busy chat doesn't buzz
-//    their phone all day. Each class shows ONE notification in the tray
-//    (a newer push replaces the older one).
+//    that class open (they already see the message live). Every message
+//    reaches everyone else. Each class shows ONE notification in the tray
+//    (a newer push replaces the older one), so a busy chat never piles up.
 //  - Anonymous posts never produce a push. Only "a session was opened" does,
 //    so nothing can hint at who wrote what.
 //  - Every function here is safe to fire and forget: it never throws into the
 //    caller, it only logs.
 
-const Class    = require('../models/Class');
-const FcmToken = require('../models/FcmToken');
+const Class = require("../models/Class");
+const FcmToken = require("../models/FcmToken");
 
 let admin = null;
 try {
-  admin = require('firebase-admin');
+  admin = require("firebase-admin");
 } catch (_) {
   admin = null;
 }
 
-const PUSH_GAP_MS = 15 * 1000;
-const BODY_MAX    = 110;
+// 0 = no quiet gap: every message is pushed (a newer one replaces the old one)
+const PUSH_GAP_MS = 0;
+const BODY_MAX = 110;
 
 let warned = false;
 
@@ -33,7 +33,9 @@ function getMessaging() {
   if (!admin || !admin.apps || admin.apps.length === 0) {
     if (!warned) {
       warned = true;
-      console.warn('classPush: Firebase Admin is not initialized, so class push notifications are off.');
+      console.warn(
+        "classPush: Firebase Admin is not initialized, so class push notifications are off.",
+      );
     }
     return null;
   }
@@ -44,16 +46,20 @@ function getMessaging() {
 // In memory, per server instance. Fine for one Render instance.
 const lastPush = new Map();
 
-const cleanup = setInterval(() => {
-  const cutoff = Date.now() - PUSH_GAP_MS;
-  for (const [key, at] of lastPush) {
-    if (at < cutoff) lastPush.delete(key);
-  }
-}, 5 * 60 * 1000);
+const cleanup = setInterval(
+  () => {
+    const cutoff = Date.now() - PUSH_GAP_MS;
+    for (const [key, at] of lastPush) {
+      if (at < cutoff) lastPush.delete(key);
+    }
+  },
+  5 * 60 * 1000,
+);
 cleanup.unref();
 
 function allowPush(classId, userId, now) {
-  const key  = `${classId}:${userId}`;
+  if (PUSH_GAP_MS <= 0) return true;
+  const key = `${classId}:${userId}`;
   const last = lastPush.get(key);
   if (last && now - last < PUSH_GAP_MS) return false;
   lastPush.set(key, now);
@@ -62,7 +68,9 @@ function allowPush(classId, userId, now) {
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 const shorten = (text) => {
-  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  const t = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
   return t.length > BODY_MAX ? `${t.slice(0, BODY_MAX - 1)}…` : t;
 };
 
@@ -79,7 +87,10 @@ async function onlineInRoom(io, classId) {
   try {
     const sockets = await io.in(`class:${classId}`).fetchSockets();
     return new Set(
-      sockets.map((s) => s.data && s.data.userId).filter(Boolean).map(String)
+      sockets
+        .map((s) => s.data && s.data.userId)
+        .filter(Boolean)
+        .map(String),
     );
   } catch (_) {
     return new Set();
@@ -93,9 +104,11 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
   const messaging = getMessaging();
   if (!messaging) return;
 
-  const docs = await FcmToken
-    .find({ user: { $in: userIds }, enabled: { $ne: false } })
-    .select('token')
+  const docs = await FcmToken.find({
+    user: { $in: userIds },
+    enabled: { $ne: false },
+  })
+    .select("token")
     .lean();
 
   const tokens = [...new Set(docs.map((d) => d.token).filter(Boolean))];
@@ -108,15 +121,21 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
       notification: { title, body },
       data: stringify(data),
       android: {
-        priority: 'high',
-        notification: tag ? { tag } : {},
+        priority: "high",
+        notification: {
+          channelId: "gradex_channel", // created by the app, high importance
+          icon: "ic_notification", // the white "SL" icon in the app
+          color: "#1565C0",
+          ...(tag ? { tag } : {}),
+        },
       },
     };
-    if (tag) message.apns = { payload: { aps: { 'thread-id': tag } } };
+    if (tag) message.apns = { payload: { aps: { "thread-id": tag } } };
 
-    const result = typeof messaging.sendEachForMulticast === 'function'
-      ? await messaging.sendEachForMulticast(message)
-      : await messaging.sendMulticast(message);
+    const result =
+      typeof messaging.sendEachForMulticast === "function"
+        ? await messaging.sendEachForMulticast(message)
+        : await messaging.sendMulticast(message);
 
     // Forget tokens that Firebase says no longer exist (app uninstalled, etc.)
     const dead = [];
@@ -124,8 +143,8 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
       const code = r.error && r.error.code;
       if (
         !r.success &&
-        (code === 'messaging/registration-token-not-registered' ||
-         code === 'messaging/invalid-registration-token')
+        (code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token")
       ) {
         dead.push(chunk[idx]);
       }
@@ -135,121 +154,117 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
 }
 
 // Wraps a function so a failure is logged and never reaches the caller
-const safe = (name, fn) => async (...args) => {
-  try {
-    await fn(...args);
-  } catch (err) {
-    console.error(`classPush.${name} failed:`, err.message);
-  }
-};
+const safe =
+  (name, fn) =>
+  async (...args) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      console.error(`classPush.${name} failed:`, err.message);
+    }
+  };
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  PUBLIC
 // ══════════════════════════════════════════════════════════════════════════════
 
 /** A chat message was sent. */
-const notifyClassMessage = safe('notifyClassMessage', async (
-  io,
-  { classId, senderId, senderName, text, mentionIds }
-) => {
-  const cls = await Class
-    .findById(classId)
-    .select('name archived members.user members.status')
-    .lean();
-  if (!cls || cls.archived) return;
+const notifyClassMessage = safe(
+  "notifyClassMessage",
+  async (io, { classId, senderId, senderName, text, mentionIds }) => {
+    const cls = await Class.findById(classId)
+      .select("name archived members.user members.status")
+      .lean();
+    if (!cls || cls.archived) return;
 
-  const online    = await onlineInRoom(io, classId);
-  const now       = Date.now();
-  const tagged    = new Set((mentionIds || []).map(String));
-  const targets   = [];
-  const taggedOut = [];
+    const online = await onlineInRoom(io, classId);
+    const now = Date.now();
+    const tagged = new Set((mentionIds || []).map(String));
+    const targets = [];
+    const taggedOut = [];
 
-  for (const m of cls.members) {
-    if (m.status !== 'active') continue;
-    const uid = String(m.user);
-    if (uid === String(senderId) || online.has(uid)) continue;
+    for (const m of cls.members) {
+      if (m.status !== "active") continue;
+      const uid = String(m.user);
+      if (uid === String(senderId) || online.has(uid)) continue;
 
-    // Someone who was @mentioned always gets an alert, even inside the
-    // 15 second quiet gap, and gets their own notification text.
-    if (tagged.has(uid)) {
-      taggedOut.push(uid);
-      lastPush.set(`${classId}:${uid}`, now);
-      continue;
+      // Someone who was @mentioned gets their own notification text.
+      if (tagged.has(uid)) {
+        taggedOut.push(uid);
+        lastPush.set(`${classId}:${uid}`, now);
+        continue;
+      }
+      if (!allowPush(classId, uid, now)) continue;
+      targets.push(uid);
     }
-    if (!allowPush(classId, uid, now)) continue;
-    targets.push(uid);
-  }
 
-  await sendToUsers(taggedOut, {
-    title: cls.name,
-    body:  `${senderName || 'Someone'} mentioned you: ${shorten(text)}`,
-    tag:   `mention:${classId}`,
-    data:  { type: 'class_message', classId },
-  });
+    await sendToUsers(taggedOut, {
+      title: cls.name,
+      body: `${senderName || "Someone"} mentioned you: ${shorten(text)}`,
+      tag: `mention:${classId}`,
+      data: { type: "class_message", classId },
+    });
 
-  await sendToUsers(targets, {
-    title: cls.name,
-    body:  `${senderName || 'Someone'}: ${shorten(text)}`,
-    tag:   `class:${classId}`,
-    data:  { type: 'class_message', classId },
-  });
-});
+    await sendToUsers(targets, {
+      title: cls.name,
+      body: `${senderName || "Someone"}: ${shorten(text)}`,
+      tag: `class:${classId}`,
+      data: { type: "class_message", classId },
+    });
+  },
+);
 
 /** An admin opened an anonymous session. Members not already in the class get a push. */
-const notifyAnonOpened = safe('notifyAnonOpened', async (
-  io,
-  { classId, className, prompt, byUserId }
-) => {
-  const cls = await Class
-    .findById(classId)
-    .select('members.user members.status')
-    .lean();
-  if (!cls) return;
+const notifyAnonOpened = safe(
+  "notifyAnonOpened",
+  async (io, { classId, className, prompt, byUserId }) => {
+    const cls = await Class.findById(classId)
+      .select("members.user members.status")
+      .lean();
+    if (!cls) return;
 
-  const online  = await onlineInRoom(io, classId);
-  const targets = cls.members
-    .filter((m) => m.status === 'active')
-    .map((m) => String(m.user))
-    .filter((uid) => uid !== String(byUserId) && !online.has(uid));
+    const online = await onlineInRoom(io, classId);
+    const targets = cls.members
+      .filter((m) => m.status === "active")
+      .map((m) => String(m.user))
+      .filter((uid) => uid !== String(byUserId) && !online.has(uid));
 
-  await sendToUsers(targets, {
-    title: className,
-    body:  prompt
-      ? `Anonymous session: ${shorten(prompt)}`
-      : 'An anonymous session is open. Tap to post without your name.',
-    tag:   `anon:${classId}`,
-    data:  { type: 'anon_opened', classId },
-  });
-});
+    await sendToUsers(targets, {
+      title: className,
+      body: prompt
+        ? `Anonymous session: ${shorten(prompt)}`
+        : "An anonymous session is open. Tap to post without your name.",
+      tag: `anon:${classId}`,
+      data: { type: "anon_opened", classId },
+    });
+  },
+);
 
 /** Someone asked to join a class that needs approval. Tells the class admins. */
-const notifyJoinRequest = safe('notifyJoinRequest', async ({
-  classId,
-  className,
-  requesterName,
-  adminIds,
-}) => {
-  await sendToUsers((adminIds || []).map(String), {
-    title: className,
-    body:  `${requesterName || 'A student'} asked to join your class.`,
-    tag:   `join:${classId}`,
-    data:  { type: 'class_join_request', classId },
-  });
-});
+const notifyJoinRequest = safe(
+  "notifyJoinRequest",
+  async ({ classId, className, requesterName, adminIds }) => {
+    await sendToUsers((adminIds || []).map(String), {
+      title: className,
+      body: `${requesterName || "A student"} asked to join your class.`,
+      tag: `join:${classId}`,
+      data: { type: "class_join_request", classId },
+    });
+  },
+);
 
 /** An admin approved a join request. Tells the student. */
-const notifyJoinApproved = safe('notifyJoinApproved', async ({
-  userId,
-  classId,
-  className,
-}) => {
-  await sendToUsers([String(userId)], {
-    title: 'You are in!',
-    body:  `An admin approved your request to join ${className}.`,
-    tag:   `approved:${classId}`,
-    data:  { type: 'class_approved', classId },
-  });
-});
+const notifyJoinApproved = safe(
+  "notifyJoinApproved",
+  async ({ userId, classId, className }) => {
+    await sendToUsers([String(userId)], {
+      title: "You are in!",
+      body: `An admin approved your request to join ${className}.`,
+      tag: `approved:${classId}`,
+      data: { type: "class_approved", classId },
+    });
+  },
+);
 
 module.exports = {
   notifyClassMessage,
