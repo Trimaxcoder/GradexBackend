@@ -26,6 +26,9 @@ const MemberSchema = new mongoose.Schema(
     // Receipts: the newest chat message that reached / was seen by this member
     lastDelivered: { type: ObjectId, default: null },
     lastRead:      { type: ObjectId, default: null },
+    // Private to this member. See utils/visibility.js.
+    clearedAt:      { type: Date, default: null },
+    disappearAfter: { type: Number, default: 0, enum: [0, 86400, 604800, 7776000] },
   },
   { _id: false }
 );

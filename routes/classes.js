@@ -16,6 +16,7 @@ const {
 const { isConfigured, signUpload } = require('../utils/cloudinary');
 const { markDelivered, receiptsFor } = require('../utils/receipts');
 const { displayName } = require('../utils/displayName');
+const { hideBeforeOf, DISAPPEAR_CHOICES } = require('../utils/visibility');
 
 const router = express.Router();
 router.use(protect);
@@ -171,8 +172,10 @@ const previewOf = (m) => {
   return a.name ? a.name : 'File';
 };
 
-const lastMessageOf = async (classId) => {
-  const m = await ClassMessage.findOne({ class: classId })
+const lastMessageOf = async (classId, hideBefore) => {
+  const where = { class: classId };
+  if (hideBefore) where.createdAt = { $gt: hideBefore };
+  const m = await ClassMessage.findOne(where)
     .sort({ _id: -1 })
     .populate({ path: 'sender', select: 'profile.name username' })
     .lean();
@@ -188,7 +191,7 @@ const lastMessageOf = async (classId) => {
 };
 
 // Messages from other people that I have not read yet (counts up to 100)
-const unreadOf = (classId, userId, member) => {
+const unreadOf = (classId, userId, member, hideBefore) => {
   const filter = {
     class:   classId,
     sender:  { $ne: userId },
@@ -196,6 +199,7 @@ const unreadOf = (classId, userId, member) => {
   };
   if (member.lastRead) filter._id = { $gt: member.lastRead };
   else                 filter.createdAt = { $gte: member.joinedAt };
+  if (hideBefore) filter.createdAt = { ...(filter.createdAt || {}), $gt: hideBefore };
   return ClassMessage.countDocuments(filter, { limit: 100 });
 };
 
@@ -213,9 +217,10 @@ router.get('/', wrap(async (req, res) => {
     const me = c.getMember(uid);
     if (!me || me.status !== 'active') return summary;
 
+    const hideBefore = hideBeforeOf(me);
     const [lastMessage, unread] = await Promise.all([
-      lastMessageOf(c._id),
-      unreadOf(c._id, uid, me),
+      lastMessageOf(c._id, hideBefore),
+      unreadOf(c._id, uid, me, hideBefore),
     ]);
     return { ...summary, lastMessage, unread };
   }));
@@ -290,9 +295,13 @@ router.post('/join', joinLimiter, wrap(async (req, res) => {
 router.get('/:id', loadClass, requireMember, wrap(async (req, res) => {
   const { cls } = req;
 
+  const hideBefore = hideBeforeOf(req.member);
+  const pinnedWhere = { class: cls._id, pinned: true, deleted: false };
+  if (hideBefore) pinnedWhere.createdAt = { $gt: hideBefore };
+
   const [open, pinned] = await Promise.all([
     AnonSession.findOne({ class: cls._id, status: 'open' }),
-    ClassMessage.find({ class: cls._id, pinned: true, deleted: false })
+    ClassMessage.find(pinnedWhere)
       .sort({ _id: -1 })
       .limit(3)
       .populate(ClassMessage.POPULATE),
@@ -304,6 +313,10 @@ router.get('/:id', loadClass, requireMember, wrap(async (req, res) => {
     activeAnonSession: open ? open.toClient() : null,
     pinned: pinned.map((m) => m.toClient()),
     receipts: receiptsFor(cls, req.user._id),
+    my: {
+      disappearAfter: req.member.disappearAfter || 0,
+      clearedAt:      req.member.clearedAt || null,
+    },
   });
 }));
 
@@ -320,11 +333,13 @@ router.get('/:id/info', loadClass, requireMember, wrap(async (req, res) => {
   const byId = new Map(people.map((u) => [String(u._id), u]));
 
   // Photos, files and voice notes that have not been deleted
+  const hideBefore = hideBeforeOf(req.member);
   const mediaMatch = {
     class:            cls._id,
     deleted:          false,
     'attachment.url': { $exists: true, $ne: '' },
   };
+  if (hideBefore) mediaMatch.createdAt = { $gt: hideBefore };
 
   const [counts, recentImages, recentFiles, pinnedCount] = await Promise.all([
     ClassMessage.aggregate([
@@ -339,7 +354,12 @@ router.get('/:id/info', loadClass, requireMember, wrap(async (req, res) => {
       .sort({ _id: -1 })
       .limit(5)
       .select('attachment'),
-    ClassMessage.countDocuments({ class: cls._id, pinned: true, deleted: false }),
+    ClassMessage.countDocuments({
+      class: cls._id,
+      pinned: true,
+      deleted: false,
+      ...(hideBefore ? { createdAt: { $gt: hideBefore } } : {}),
+    }),
   ]);
 
   const countOf = (kind) => {
@@ -361,6 +381,7 @@ router.get('/:id/info', loadClass, requireMember, wrap(async (req, res) => {
         isOwner: id === ownerId,
       })),
       myJoinedAt: req.member.joinedAt,
+      disappearAfter: req.member.disappearAfter || 0,
       pinnedCount,
       media: {
         images: countOf('image'),
@@ -598,6 +619,10 @@ router.get('/:id/messages', loadClass, requireMember, wrap(async (req, res) => {
   const filter = { class: req.cls._id };
   if (req.query.before && isId(req.query.before)) filter._id = { $lt: req.query.before };
 
+  // Messages I cleared, or that have disappeared for me, are not sent
+  const hideBefore = hideBeforeOf(req.member);
+  if (hideBefore) filter.createdAt = { $gt: hideBefore };
+
   const rows = await ClassMessage.find(filter)
     .sort({ _id: -1 })
     .limit(limit + 1)
@@ -612,6 +637,49 @@ router.get('/:id/messages', loadClass, requireMember, wrap(async (req, res) => {
   if (!req.query.before && rows.length) {
     markDelivered(req.app.get('io'), req.cls._id, [req.user._id], rows[0]._id);
   }
+}));
+
+// POST /api/classes/:id/clear  → clear the chat for ME only.
+// Other members keep their messages. Files are deleted from storage later,
+// once every member has cleared them or let them disappear.
+router.post('/:id/clear', loadClass, requireMember, wrap(async (req, res) => {
+  const { cls } = req;
+  const now = new Date();
+
+  await Class.updateOne(
+    { _id: cls._id, 'members.user': oid(req.user._id) },
+    { $set: { 'members.$.clearedAt': now } }
+  );
+
+  // My other devices clear too
+  emitToUser(req, req.user._id, 'class:cleared', {
+    classId:   String(cls._id),
+    clearedAt: now,
+  });
+
+  res.json({ success: true, clearedAt: now });
+}));
+
+// PUT /api/classes/:id/disappearing   body: { seconds: 0 | 86400 | 604800 | 7776000 }
+// My own setting: messages older than this disappear for me. 0 turns it off.
+router.put('/:id/disappearing', loadClass, requireMember, wrap(async (req, res) => {
+  const { cls } = req;
+  const seconds = Number(req.body.seconds);
+  if (!DISAPPEAR_CHOICES.includes(seconds)) {
+    return fail(res, 400, 'Choose off, 24 hours, 7 days or 90 days.');
+  }
+
+  await Class.updateOne(
+    { _id: cls._id, 'members.user': oid(req.user._id) },
+    { $set: { 'members.$.disappearAfter': seconds } }
+  );
+
+  emitToUser(req, req.user._id, 'class:preferences', {
+    classId:        String(cls._id),
+    disappearAfter: seconds,
+  });
+
+  res.json({ success: true, disappearAfter: seconds });
 }));
 
 // GET /api/classes/:id/search?q=text&before=<messageId>&limit=30
@@ -632,6 +700,8 @@ router.get('/:id/search', searchLimiter, loadClass, requireMember, wrap(async (r
     $or:     [{ text: re }, { 'attachment.name': re }],
   };
   if (req.query.before && isId(req.query.before)) filter._id = { $lt: req.query.before };
+  const hideBefore = hideBeforeOf(req.member);
+  if (hideBefore) filter.createdAt = { $gt: hideBefore };
 
   const rows = await ClassMessage.find(filter)
     .sort({ _id: -1 })
@@ -655,14 +725,18 @@ router.get('/:id/messages/:mid/context', loadClass, requireMember, wrap(async (r
 
   const target = await ClassMessage.findOne({ _id: req.params.mid, class: req.cls._id })
     .populate(ClassMessage.POPULATE);
-  if (!target) return fail(res, 404, 'Message not found.');
+  const hideBefore = hideBeforeOf(req.member);
+  if (!target || (hideBefore && target.createdAt <= hideBefore)) {
+    return fail(res, 404, 'Message not found.');
+  }
+  const visible = hideBefore ? { createdAt: { $gt: hideBefore } } : {};
 
   const [before, after] = await Promise.all([
-    ClassMessage.find({ class: req.cls._id, _id: { $lt: target._id } })
+    ClassMessage.find({ class: req.cls._id, _id: { $lt: target._id }, ...visible })
       .sort({ _id: -1 })
       .limit(n)
       .populate(ClassMessage.POPULATE),
-    ClassMessage.find({ class: req.cls._id, _id: { $gt: target._id } })
+    ClassMessage.find({ class: req.cls._id, _id: { $gt: target._id }, ...visible })
       .sort({ _id: 1 })
       .limit(n)
       .populate(ClassMessage.POPULATE),

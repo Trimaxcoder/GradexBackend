@@ -12,6 +12,7 @@ const { notifyClassMessage } = require('../utils/classPush');
 const { cleanAttachment, attachmentLabel, destroyAsset } = require('../utils/cloudinary');
 const { markDelivered, markRead } = require('../utils/receipts');
 const { displayName } = require('../utils/displayName');
+const { startRetentionJob } = require('../utils/retention');
 
 const isId = mongoose.isValidObjectId;
 
@@ -73,6 +74,9 @@ const handle = (fn) => async (data, cb) => {
 };
 
 function initSocket(httpServer) {
+  // Background clean-up of messages that every member has hidden
+  startRetentionJob();
+
   const io = new Server(httpServer, {
     cors: { origin: process.env.CORS_ORIGIN || '*' },
     pingInterval: 25000,
