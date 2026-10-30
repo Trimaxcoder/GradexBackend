@@ -485,6 +485,7 @@ router.get('/:id/members', loadClass, requireMember, wrap(async (req, res) => {
     return {
       userId:     String(m.user),
       name:       displayName(u),
+      username:   (u && u.username) || '',
       department: p.department || '',
       level:      p.level || '',
       role:       m.role,

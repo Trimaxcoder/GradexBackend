@@ -150,7 +150,7 @@ const safe = (name, fn) => async (...args) => {
 /** A chat message was sent. */
 const notifyClassMessage = safe('notifyClassMessage', async (
   io,
-  { classId, senderId, senderName, text }
+  { classId, senderId, senderName, text, mentionIds }
 ) => {
   const cls = await Class
     .findById(classId)
@@ -158,17 +158,34 @@ const notifyClassMessage = safe('notifyClassMessage', async (
     .lean();
   if (!cls || cls.archived) return;
 
-  const online  = await onlineInRoom(io, classId);
-  const now     = Date.now();
-  const targets = [];
+  const online    = await onlineInRoom(io, classId);
+  const now       = Date.now();
+  const tagged    = new Set((mentionIds || []).map(String));
+  const targets   = [];
+  const taggedOut = [];
 
   for (const m of cls.members) {
     if (m.status !== 'active') continue;
     const uid = String(m.user);
     if (uid === String(senderId) || online.has(uid)) continue;
+
+    // Someone who was @mentioned always gets an alert, even inside the
+    // 15 second quiet gap, and gets their own notification text.
+    if (tagged.has(uid)) {
+      taggedOut.push(uid);
+      lastPush.set(`${classId}:${uid}`, now);
+      continue;
+    }
     if (!allowPush(classId, uid, now)) continue;
     targets.push(uid);
   }
+
+  await sendToUsers(taggedOut, {
+    title: cls.name,
+    body:  `${senderName || 'Someone'} mentioned you: ${shorten(text)}`,
+    tag:   `mention:${classId}`,
+    data:  { type: 'class_message', classId },
+  });
 
   await sendToUsers(targets, {
     title: cls.name,

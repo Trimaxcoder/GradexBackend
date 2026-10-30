@@ -36,6 +36,8 @@ const MessageSchema = new mongoose.Schema(
     reactions: { type: [ReactionSchema], default: [] },
     editedAt:  { type: Date, default: null }, // set when the text was edited
     forwarded: { type: Boolean, default: false }, // this message was forwarded from another chat
+    // people tagged with @username in the text (checked against the class members)
+    mentions: [{ _id: false, user: { type: ObjectId, ref: 'User' }, username: String }],
     pinned:  { type: Boolean, default: false },
     deleted: { type: Boolean, default: false }, // soft delete, text is wiped
     reportedBy: { type: [ObjectId], default: [], select: false },
@@ -88,6 +90,7 @@ MessageSchema.methods.toClient = function () {
     reactions: this.deleted ? {} : groupReactions(this.reactions),
     editedAt:  this.deleted ? null : (this.editedAt || null),
     forwarded: !this.deleted && !!this.forwarded,
+    mentions:  this.deleted ? [] : (this.mentions || []).map((x) => ({ id: String(x.user), username: x.username })),
     replyTo,
     createdAt: this.createdAt,
   };

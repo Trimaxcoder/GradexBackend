@@ -21,6 +21,7 @@ const { markDelivered, markRead } = require('../utils/receipts');
 const { displayName } = require('../utils/displayName');
 const { startRetentionJob } = require('../utils/retention');
 const { REACTIONS, groupReactions } = require('../utils/reactions');
+const { resolveMentions } = require('../utils/mentions');
 
 const isId = mongoose.isValidObjectId;
 
@@ -189,6 +190,7 @@ function initSocket(httpServer) {
         senderId:   userId,
         senderName: displayName(msg.sender),
         text:       preview,
+        mentionIds: (msg.mentions || []).map((x) => String(x.user)),
       });
 
       return payload;
@@ -222,12 +224,15 @@ function initSocket(httpServer) {
         if (parent) replyId = replyTo;
       }
 
+      const mentions = clean ? await resolveMentions(classId, clean, userId) : [];
+
       const msg = await ClassMessage.create({
         class:   classId,
         sender:  userId,
         text:    clean,
         attachment: att,
         replyTo: replyId,
+        mentions,
       });
       const payload = await publish(msg, classId, clientId, clean || attachmentLabel(att));
       reply({ ok: true, message: payload });
@@ -344,6 +349,8 @@ function initSocket(httpServer) {
 
       msg.text     = clean;
       msg.editedAt = new Date();
+      // Tags are re-read from the new text. Editing never sends a new alert.
+      msg.mentions = clean ? await resolveMentions(String(msg.class), clean, userId) : [];
       await msg.save();
 
       io.to(`class:${msg.class}`).emit('message:edited', {
@@ -351,6 +358,7 @@ function initSocket(httpServer) {
         classId:  String(msg.class),
         text:     msg.text,
         editedAt: msg.editedAt,
+        mentions: msg.mentions.map((x) => ({ id: String(x.user), username: x.username })),
       });
       reply({ ok: true, editedAt: msg.editedAt });
     }));
