@@ -6,6 +6,7 @@ const User = require("../models/User");
 const FcmToken = require("../models/FcmToken");
 const { sendToTokens } = require("../config/firebase");
 const { sendMorningDigests } = require("../jobs/morningDigest");
+const { ensureAdminScope } = require("../utils/adminScope");
 
 // POST /api/admin/request
 router.post("/request", auth, async (req, res, next) => {
@@ -77,6 +78,7 @@ router.post("/request", auth, async (req, res, next) => {
 // GET /api/admin/status
 router.get("/status", auth, async (req, res, next) => {
   try {
+    await ensureAdminScope(req.user);
     const request = await AdminRequest.findOne({ user: req.user._id }).sort({
       createdAt: -1,
     });

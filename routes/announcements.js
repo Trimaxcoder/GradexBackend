@@ -12,6 +12,7 @@ const {
 const Announcement = require('../models/Announcement');
 const FcmToken     = require('../models/FcmToken');
 const { sendToTokens } = require('../config/firebase');
+const { ensureAdminScope } = require('../utils/adminScope');
 
 const TITLE_MAX   = 120;
 const MESSAGE_MAX = 2000;
@@ -93,6 +94,7 @@ router.post('/', auth, async (req, res, next) => {
   try {
     const { title, message, scope } = req.body;
 
+    await ensureAdminScope(req.user);
     const permission = resolvePostTarget(req.user, scope);
     if (!permission.ok) {
       return res.status(permission.status).json({ message: permission.message });

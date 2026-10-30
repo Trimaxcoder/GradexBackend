@@ -86,6 +86,7 @@ app.use('/api/reminders', reminderRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/app-version', appVersionRoutes);
 app.use('/api/classes', classRoutes);
+app.use('/api/academic', require('./routes/academic'));
 
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
