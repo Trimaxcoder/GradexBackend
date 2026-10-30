@@ -170,6 +170,33 @@ function initSocket(httpServer) {
         }
       })();
 
+      // Tell every member's app so the class list can show the last message
+      // and the unread count without opening the class.
+      (async () => {
+        try {
+          const cls = await Class.findById(classId).select('members.user members.status');
+          if (!cls) return;
+          const rooms = cls.members
+            .filter((x) => x.status === 'active')
+            .map((x) => `user:${x.user}`);
+          if (!rooms.length) return;
+
+          io.to(rooms).emit('class:activity', {
+            classId,
+            lastMessage: {
+              id:         String(msg._id),
+              text:       (clean || attachmentLabel(att)).replace(/\s+/g, ' ').slice(0, 120),
+              senderId:   userId,
+              senderName: displayName(msg.sender),
+              createdAt:  msg.createdAt,
+              deleted:    false,
+            },
+          });
+        } catch (err) {
+          console.error('class activity failed:', err.message);
+        }
+      })();
+
       // Push to members who don't have this class open right now.
       // Not awaited: the sender never waits for it, and it never throws.
       notifyClassMessage(io, {

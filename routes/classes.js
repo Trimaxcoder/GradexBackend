@@ -149,17 +149,75 @@ router.post('/', wrap(async (req, res) => {
   res.status(201).json({ success: true, class: classSummary(cls, req.user._id) });
 }));
 
-// GET /api/classes  → classes I'm in (including ones awaiting approval)
-router.get('/', wrap(async (req, res) => {
-  const classes = await Class.find({
-    'members.user': req.user._id,
-    archived: false,
-  }).sort({ updatedAt: -1 });
+// What the class list shows as the last message
+const previewOf = (m) => {
+  if (m.deleted) return 'This message was deleted';
+  if (m.text) return String(m.text).replace(/\s+/g, ' ').trim().slice(0, 120);
+  const a = m.attachment;
+  if (!a) return '';
+  if (a.kind === 'image') return 'Photo';
+  if (a.kind === 'audio') return 'Voice note';
+  return a.name ? a.name : 'File';
+};
 
-  res.json({
-    success: true,
-    classes: classes.map((c) => classSummary(c, req.user._id)),
+const lastMessageOf = async (classId) => {
+  const m = await ClassMessage.findOne({ class: classId })
+    .sort({ _id: -1 })
+    .populate({ path: 'sender', select: 'profile.name username' })
+    .lean();
+  if (!m) return null;
+  return {
+    id:         String(m._id),
+    text:       previewOf(m),
+    senderId:   String(m.sender && m.sender._id ? m.sender._id : m.sender),
+    senderName: displayName(m.sender),
+    createdAt:  m.createdAt,
+    deleted:    !!m.deleted,
+  };
+};
+
+// Messages from other people that I have not read yet (counts up to 100)
+const unreadOf = (classId, userId, member) => {
+  const filter = {
+    class:   classId,
+    sender:  { $ne: userId },
+    deleted: false,
+  };
+  if (member.lastRead) filter._id = { $gt: member.lastRead };
+  else                 filter.createdAt = { $gte: member.joinedAt };
+  return ClassMessage.countDocuments(filter, { limit: 100 });
+};
+
+// GET /api/classes  → classes I'm in (including ones awaiting approval),
+// each with its last message and my unread count. Newest activity first.
+router.get('/', wrap(async (req, res) => {
+  const uid = req.user._id;
+  const classes = await Class.find({
+    'members.user': uid,
+    archived: false,
   });
+
+  const rows = await Promise.all(classes.map(async (c) => {
+    const summary = classSummary(c, uid);
+    const me = c.getMember(uid);
+    if (!me || me.status !== 'active') return summary;
+
+    const [lastMessage, unread] = await Promise.all([
+      lastMessageOf(c._id),
+      unreadOf(c._id, uid, me),
+    ]);
+    return { ...summary, lastMessage, unread };
+  }));
+
+  const stamp = (r) =>
+    new Date(r.lastMessage ? r.lastMessage.createdAt : r.createdAt).getTime();
+  rows.sort((a, b) => {
+    const pa = a.myStatus === 'pending' ? 1 : 0;
+    const pb = b.myStatus === 'pending' ? 1 : 0;
+    return pa - pb || stamp(b) - stamp(a);
+  });
+
+  res.json({ success: true, classes: rows });
 }));
 
 // POST /api/classes/join  → join with a code (also used by the invite link)
