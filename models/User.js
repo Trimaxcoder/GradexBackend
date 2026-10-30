@@ -99,6 +99,20 @@ const UserSchema = new mongoose.Schema(
       type:    Boolean,
       default: false,
     },
+
+        // Class this rep is verified for. Set only on approval, never user-editable.
+    adminScope: {
+      type: new mongoose.Schema(
+        {
+          school:     { type: String, default: '' },
+          faculty:    { type: String, default: '' },
+          department: { type: String, default: '' },
+          level:      { type: String, default: '' },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
   },
   { timestamps: true }
 );

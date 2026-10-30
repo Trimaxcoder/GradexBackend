@@ -82,7 +82,12 @@ router.get("/status", auth, async (req, res, next) => {
     });
     const isAdmin = req.user.isAdmin || false;
     const isSuperAdmin = req.user.isSuperAdmin || false;
-    res.json({ isAdmin, isSuperAdmin, request });
+    res.json({
+      isAdmin,
+      isSuperAdmin,
+      request,
+      adminScope: req.user.adminScope || null,
+    });
   } catch (err) {
     next(err);
   }
@@ -132,6 +137,12 @@ router.put("/review/:id", auth, async (req, res, next) => {
         "profile.faculty": request.faculty,
         "profile.department": request.department,
         "profile.level": request.level,
+        adminScope: {
+          school: request.school,
+          faculty: request.faculty,
+          department: request.department,
+          level: request.level,
+        },
       });
 
       const fcmDoc = await FcmToken.findOne({ user: request.user._id });
@@ -169,7 +180,10 @@ router.post("/resign", auth, async (req, res, next) => {
     }
 
     // Remove admin rights
-    await User.findByIdAndUpdate(req.user._id, { isAdmin: false });
+    await User.findByIdAndUpdate(req.user._id, {
+      isAdmin: false,
+      $unset: { adminScope: 1 },
+    });
 
     // Update their admin request status
     await AdminRequest.findOneAndUpdate(
@@ -199,7 +213,10 @@ router.delete("/revoke/:userId", auth, async (req, res, next) => {
     }
 
     // Remove admin rights
-    await User.findByIdAndUpdate(req.params.userId, { isAdmin: false });
+    await User.findByIdAndUpdate(req.params.userId, {
+      isAdmin: false,
+      $unset: { adminScope: 1 },
+    });
 
     // Update their admin request status
     await AdminRequest.findOneAndUpdate(
@@ -231,14 +248,13 @@ router.get("/all", auth, async (req, res, next) => {
       return res.status(403).json({ message: "Forbidden" });
     }
     const admins = await User.find({ isAdmin: true }).select(
-      "email profile createdAt",
+      "email profile adminScope createdAt",
     );
     res.json({ admins });
   } catch (err) {
     next(err);
   }
 });
-
 
 // POST /api/admin/trigger-morning-digest — called by external cron (cron-job.org)
 // No `auth` middleware: the caller is a cron service, not a logged-in user.
