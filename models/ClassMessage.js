@@ -34,6 +34,7 @@ const MessageSchema = new mongoose.Schema(
     attachment: { type: AttachmentSchema, default: null },
     replyTo: { type: ObjectId, ref: 'ClassMessage', default: null },
     reactions: { type: [ReactionSchema], default: [] },
+    editedAt:  { type: Date, default: null }, // set when the text was edited
     pinned:  { type: Boolean, default: false },
     deleted: { type: Boolean, default: false }, // soft delete, text is wiped
     reportedBy: { type: [ObjectId], default: [], select: false },
@@ -84,6 +85,7 @@ MessageSchema.methods.toClient = function () {
     deleted:   !!this.deleted,
     pinned:    !!this.pinned,
     reactions: this.deleted ? {} : groupReactions(this.reactions),
+    editedAt:  this.deleted ? null : (this.editedAt || null),
     replyTo,
     createdAt: this.createdAt,
   };

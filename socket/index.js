@@ -48,6 +48,9 @@ const anonLimiter = createLimiter(10, 60 * 1000); // 10 anon posts / minute / us
 const readLimiter = createLimiter(30, 10 * 1000); // 30 "I've read up to here" / 10 s
 const reactLimiter = createLimiter(30, 10 * 1000); // 30 reactions / 10 s
 
+// How long after sending a message its text can still be edited
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+
 // ── Membership lookup (loads only this user's member entry) ───────────────────
 async function loadMembership(classId, userId) {
   if (!isId(classId)) return null;
@@ -225,6 +228,50 @@ function initSocket(httpServer) {
 
       await markRead(io, classId, userId, upToId);
       reply({ ok: true });
+    }));
+
+    // ── Edit my own message (within 15 minutes of sending it) ─────────────────
+    socket.on('message:edit', handle(async ({ messageId, text }, reply) => {
+      if (!isId(messageId)) return reply({ ok: false, error: 'INVALID' });
+
+      const clean = typeof text === 'string' ? text.trim() : '';
+      if (clean.length > 2000)  return reply({ ok: false, error: 'INVALID_TEXT' });
+      if (!chatLimiter(userId)) return reply({ ok: false, error: 'RATE_LIMITED' });
+
+      const msg = await ClassMessage.findById(messageId);
+      if (!msg || msg.deleted)             return reply({ ok: false, error: 'NOT_FOUND' });
+      if (String(msg.sender) !== userId)   return reply({ ok: false, error: 'FORBIDDEN' });
+      if (msg.attachment && msg.attachment.kind === 'audio') {
+        return reply({ ok: false, error: 'INVALID' }); // voice notes have no text
+      }
+      // A text message cannot become empty. A photo or file may lose its caption.
+      if (!clean && !msg.attachment)       return reply({ ok: false, error: 'INVALID_TEXT' });
+
+      if (Date.now() - new Date(msg.createdAt).getTime() > EDIT_WINDOW_MS) {
+        return reply({ ok: false, error: 'EDIT_EXPIRED' });
+      }
+
+      const m = await loadMembership(String(msg.class), userId);
+      if (!m)             return reply({ ok: false, error: 'NOT_A_MEMBER' });
+      if (m.cls.archived) return reply({ ok: false, error: 'CLASS_ARCHIVED' });
+      if (m.member.muted) return reply({ ok: false, error: 'MUTED' });
+      if (m.cls.chatLocked && m.member.role !== 'admin') {
+        return reply({ ok: false, error: 'CHAT_LOCKED' });
+      }
+
+      if (clean === msg.text) return reply({ ok: true, unchanged: true });
+
+      msg.text     = clean;
+      msg.editedAt = new Date();
+      await msg.save();
+
+      io.to(`class:${msg.class}`).emit('message:edited', {
+        id:       String(msg._id),
+        classId:  String(msg.class),
+        text:     msg.text,
+        editedAt: msg.editedAt,
+      });
+      reply({ ok: true, editedAt: msg.editedAt });
     }));
 
     // ── React to a message with an emoji (tap the same one again to remove) ───
