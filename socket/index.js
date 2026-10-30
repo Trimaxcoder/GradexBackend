@@ -9,7 +9,14 @@ const AnonSession  = require('../models/AnonSession');
 const AnonPost     = require('../models/AnonPost');
 const anonToken    = require('../utils/anonToken');
 const { notifyClassMessage } = require('../utils/classPush');
-const { cleanAttachment, attachmentLabel, destroyAsset } = require('../utils/cloudinary');
+const {
+  cleanAttachment,
+  attachmentLabel,
+  destroyAsset,
+  copyAsset,
+  isValidAssetUrl,
+} = require('../utils/cloudinary');
+const { hideBeforeOf } = require('../utils/visibility');
 const { markDelivered, markRead } = require('../utils/receipts');
 const { displayName } = require('../utils/displayName');
 const { startRetentionJob } = require('../utils/retention');
@@ -47,6 +54,7 @@ const chatLimiter = createLimiter(10, 10 * 1000); // 10 chat messages / 10 s
 const anonLimiter = createLimiter(10, 60 * 1000); // 10 anon posts / minute / user
 const readLimiter = createLimiter(30, 10 * 1000); // 30 "I've read up to here" / 10 s
 const reactLimiter = createLimiter(30, 10 * 1000); // 30 reactions / 10 s
+const forwardLimiter = createLimiter(6, 60 * 1000); // 6 forwards / minute
 
 // How long after sending a message its text can still be edited
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
@@ -126,6 +134,66 @@ function initSocket(httpServer) {
       reply({ ok: true });
     }));
 
+    // Sends a freshly saved message to everyone: the live event, delivery
+    // ticks, the class-list update and the push notification. Returns the
+    // message as the app shows it. Used by normal sends and by forwards.
+    const publish = async (msg, classId, clientId, preview) => {
+      await msg.populate(ClassMessage.POPULATE);
+
+      const payload = msg.toClient();
+      // clientId lets the sender match this to its optimistic "sending..." bubble
+      io.to(`class:${classId}`).emit('message:new', { ...payload, clientId: clientId || null });
+
+      // Everyone else who has this class open has now received it
+      (async () => {
+        try {
+          const live = await io.in(`class:${classId}`).fetchSockets();
+          const ids  = [...new Set(live.map((s) => s.data.userId))].filter((id) => id !== userId);
+          await markDelivered(io, classId, ids, msg._id);
+        } catch (err) {
+          console.error('delivery receipts failed:', err.message);
+        }
+      })();
+
+      // Tell every member's app so the class list can show the last message
+      // and the unread count without opening the class.
+      (async () => {
+        try {
+          const cls = await Class.findById(classId).select('members.user members.status');
+          if (!cls) return;
+          const rooms = cls.members
+            .filter((x) => x.status === 'active')
+            .map((x) => `user:${x.user}`);
+          if (!rooms.length) return;
+
+          io.to(rooms).emit('class:activity', {
+            classId,
+            lastMessage: {
+              id:         String(msg._id),
+              text:       String(preview || '').replace(/\s+/g, ' ').slice(0, 120),
+              senderId:   userId,
+              senderName: displayName(msg.sender),
+              createdAt:  msg.createdAt,
+              deleted:    false,
+            },
+          });
+        } catch (err) {
+          console.error('class activity failed:', err.message);
+        }
+      })();
+
+      // Push to members who don't have this class open right now.
+      // Not awaited: the sender never waits for it, and it never throws.
+      notifyClassMessage(io, {
+        classId,
+        senderId:   userId,
+        senderName: displayName(msg.sender),
+        text:       preview,
+      });
+
+      return payload;
+    };
+
     // ── Send a chat message ───────────────────────────────────────────────────
     socket.on('message:send', handle(async ({ classId, text, replyTo, clientId, attachment }, reply) => {
       const clean = typeof text === 'string' ? text.trim() : '';
@@ -161,59 +229,72 @@ function initSocket(httpServer) {
         attachment: att,
         replyTo: replyId,
       });
-      await msg.populate(ClassMessage.POPULATE);
-
-      const payload = msg.toClient();
-      // clientId lets the sender match this to its optimistic "sending..." bubble
-      io.to(`class:${classId}`).emit('message:new', { ...payload, clientId: clientId || null });
+      const payload = await publish(msg, classId, clientId, clean || attachmentLabel(att));
       reply({ ok: true, message: payload });
+    }));
 
-      // Everyone else who has this class open has now received it
-      (async () => {
-        try {
-          const live = await io.in(`class:${classId}`).fetchSockets();
-          const ids  = [...new Set(live.map((s) => s.data.userId))].filter((id) => id !== userId);
-          await markDelivered(io, classId, ids, msg._id);
-        } catch (err) {
-          console.error('delivery receipts failed:', err.message);
+    // ── Forward a message to other classes ────────────────────────────────────
+    socket.on('message:forward', handle(async ({ messageId, classIds }, reply) => {
+      if (!isId(messageId) || !Array.isArray(classIds)) {
+        return reply({ ok: false, error: 'INVALID' });
+      }
+      const targets = [...new Set(classIds.map(String))].filter(isId).slice(0, 5);
+      if (!targets.length)         return reply({ ok: false, error: 'INVALID' });
+      if (!forwardLimiter(userId)) return reply({ ok: false, error: 'RATE_LIMITED' });
+
+      const src = await ClassMessage.findById(messageId);
+      if (!src || src.deleted) return reply({ ok: false, error: 'NOT_FOUND' });
+
+      // I must be able to see the original myself
+      const sm = await loadMembership(String(src.class), userId);
+      if (!sm) return reply({ ok: false, error: 'NOT_A_MEMBER' });
+      const hideBefore = hideBeforeOf(sm.member);
+      if (hideBefore && src.createdAt <= hideBefore) {
+        return reply({ ok: false, error: 'NOT_FOUND' });
+      }
+
+      const results = [];
+      for (const classId of targets) {
+        const tm = await loadMembership(classId, userId);
+        if (!tm)             { results.push({ classId, ok: false, error: 'NOT_A_MEMBER' });    continue; }
+        if (tm.cls.archived) { results.push({ classId, ok: false, error: 'CLASS_ARCHIVED' }); continue; }
+        if (tm.member.muted) { results.push({ classId, ok: false, error: 'MUTED' });          continue; }
+        if (tm.cls.chatLocked && tm.member.role !== 'admin') {
+          results.push({ classId, ok: false, error: 'CHAT_LOCKED' });
+          continue;
         }
-      })();
 
-      // Tell every member's app so the class list can show the last message
-      // and the unread count without opening the class.
-      (async () => {
-        try {
-          const cls = await Class.findById(classId).select('members.user members.status');
-          if (!cls) return;
-          const rooms = cls.members
-            .filter((x) => x.status === 'active')
-            .map((x) => `user:${x.user}`);
-          if (!rooms.length) return;
-
-          io.to(rooms).emit('class:activity', {
-            classId,
-            lastMessage: {
-              id:         String(msg._id),
-              text:       (clean || attachmentLabel(att)).replace(/\s+/g, ' ').slice(0, 120),
-              senderId:   userId,
-              senderName: displayName(msg.sender),
-              createdAt:  msg.createdAt,
-              deleted:    false,
-            },
-          });
-        } catch (err) {
-          console.error('class activity failed:', err.message);
+        // A forwarded file gets its own copy, so deleting the original
+        // message later cannot break it.
+        let att = null;
+        if (src.attachment && src.attachment.url) {
+          const url = await copyAsset(src.attachment.url, classId);
+          if (!url || !isValidAssetUrl(url, classId)) {
+            results.push({ classId, ok: false, error: 'UPLOAD_FAILED' });
+            continue;
+          }
+          att = {
+            kind:     src.attachment.kind,
+            url,
+            name:     src.attachment.name,
+            size:     src.attachment.size,
+            mime:     src.attachment.mime,
+            duration: src.attachment.duration,
+          };
         }
-      })();
 
-      // Push to members who don't have this class open right now.
-      // Not awaited: the sender never waits for it, and it never throws.
-      notifyClassMessage(io, {
-        classId,
-        senderId:   userId,
-        senderName: displayName(msg.sender),
-        text:       clean || attachmentLabel(att),
-      });
+        const msg = await ClassMessage.create({
+          class:     classId,
+          sender:    userId,
+          text:      src.text,
+          attachment: att,
+          forwarded: true,
+        });
+        await publish(msg, classId, null, src.text || attachmentLabel(att));
+        results.push({ classId, ok: true });
+      }
+
+      reply({ ok: results.some((r) => r.ok), results });
     }));
 
     // ── "I have read up to this message" ──────────────────────────────────────

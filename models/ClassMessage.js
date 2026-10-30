@@ -35,6 +35,7 @@ const MessageSchema = new mongoose.Schema(
     replyTo: { type: ObjectId, ref: 'ClassMessage', default: null },
     reactions: { type: [ReactionSchema], default: [] },
     editedAt:  { type: Date, default: null }, // set when the text was edited
+    forwarded: { type: Boolean, default: false }, // this message was forwarded from another chat
     pinned:  { type: Boolean, default: false },
     deleted: { type: Boolean, default: false }, // soft delete, text is wiped
     reportedBy: { type: [ObjectId], default: [], select: false },
@@ -86,6 +87,7 @@ MessageSchema.methods.toClient = function () {
     pinned:    !!this.pinned,
     reactions: this.deleted ? {} : groupReactions(this.reactions),
     editedAt:  this.deleted ? null : (this.editedAt || null),
+    forwarded: !this.deleted && !!this.forwarded,
     replyTo,
     createdAt: this.createdAt,
   };

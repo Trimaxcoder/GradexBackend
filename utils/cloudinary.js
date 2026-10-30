@@ -123,12 +123,57 @@ async function destroyAsset(url) {
   }
 }
 
+/**
+ * Makes a copy of a file inside ANOTHER class's folder on Cloudinary and
+ * returns the new link (or null if it failed). Used when a message is
+ * forwarded: the forwarded message owns its own copy, so deleting the
+ * original message can never break it.
+ */
+async function copyAsset(url, targetClassId) {
+  try {
+    if (!isConfigured() || typeof fetch !== 'function') return null;
+
+    const m = /\/(image|video|raw)\/upload\//.exec(String(url));
+    if (!m) return null;
+
+    const folder    = classFolder(targetClassId);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = sha1(`folder=${folder}&timestamp=${timestamp}${apiSecret()}`);
+
+    // Cloudinary downloads the file from its own link and stores a new copy
+    const body = new URLSearchParams({
+      file:      String(url),
+      folder,
+      timestamp: String(timestamp),
+      api_key:   apiKey(),
+      signature,
+    });
+
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName()}/${m[1]}/upload`, {
+      method: 'POST',
+      body,
+    });
+    if (!res.ok) {
+      console.error('Cloudinary copy failed:', res.status);
+      return null;
+    }
+
+    const data = await res.json();
+    return data && data.secure_url ? String(data.secure_url) : null;
+  } catch (err) {
+    console.error('Cloudinary copy failed:', err.message);
+    return null;
+  }
+}
+
 module.exports = {
   isConfigured,
   signUpload,
   cleanAttachment,
   attachmentLabel,
   destroyAsset,
+  copyAsset,
+  isValidAssetUrl,
   MAX_FILE_BYTES,
   MAX_AUDIO_SECONDS,
 };
