@@ -13,6 +13,7 @@ const { cleanAttachment, attachmentLabel, destroyAsset } = require('../utils/clo
 const { markDelivered, markRead } = require('../utils/receipts');
 const { displayName } = require('../utils/displayName');
 const { startRetentionJob } = require('../utils/retention');
+const { REACTIONS, groupReactions } = require('../utils/reactions');
 
 const isId = mongoose.isValidObjectId;
 
@@ -45,6 +46,7 @@ const createLimiter = (max, windowMs) => {
 const chatLimiter = createLimiter(10, 10 * 1000); // 10 chat messages / 10 s
 const anonLimiter = createLimiter(10, 60 * 1000); // 10 anon posts / minute / user
 const readLimiter = createLimiter(30, 10 * 1000); // 30 "I've read up to here" / 10 s
+const reactLimiter = createLimiter(30, 10 * 1000); // 30 reactions / 10 s
 
 // ── Membership lookup (loads only this user's member entry) ───────────────────
 async function loadMembership(classId, userId) {
@@ -225,6 +227,44 @@ function initSocket(httpServer) {
       reply({ ok: true });
     }));
 
+    // ── React to a message with an emoji (tap the same one again to remove) ───
+    socket.on('reaction:set', handle(async ({ messageId, emoji }, reply) => {
+      if (!isId(messageId)) return reply({ ok: false, error: 'INVALID' });
+      if (emoji && !REACTIONS.includes(emoji)) return reply({ ok: false, error: 'INVALID' });
+      if (!reactLimiter(userId)) return reply({ ok: false, error: 'RATE_LIMITED' });
+
+      const msg = await ClassMessage.findById(messageId).select('class deleted reactions');
+      if (!msg || msg.deleted) return reply({ ok: false, error: 'NOT_FOUND' });
+
+      const m = await loadMembership(String(msg.class), userId);
+      if (!m)             return reply({ ok: false, error: 'NOT_A_MEMBER' });
+      if (m.cls.archived) return reply({ ok: false, error: 'CLASS_ARCHIVED' });
+      if (m.member.muted) return reply({ ok: false, error: 'MUTED' });
+
+      const mine = msg.reactions.find((r) => String(r.user) === userId);
+      // Same emoji again = take my reaction back
+      const next = !emoji || (mine && mine.emoji === emoji) ? '' : emoji;
+
+      const uid = new mongoose.Types.ObjectId(userId);
+      await ClassMessage.updateOne({ _id: msg._id }, { $pull: { reactions: { user: uid } } });
+      if (next) {
+        await ClassMessage.updateOne(
+          { _id: msg._id, 'reactions.user': { $ne: uid } },
+          { $push: { reactions: { user: uid, emoji: next } } }
+        );
+      }
+
+      const fresh   = await ClassMessage.findById(msg._id).select('reactions');
+      const grouped = groupReactions(fresh && fresh.reactions);
+
+      io.to(`class:${msg.class}`).emit('message:reaction', {
+        id:        String(msg._id),
+        classId:   String(msg.class),
+        reactions: grouped,
+      });
+      reply({ ok: true, reactions: grouped });
+    }));
+
     // ── Delete a message (own message, or any message if class admin) ─────────
     socket.on('message:delete', handle(async ({ messageId }, reply) => {
       if (!isId(messageId)) return reply({ ok: false, error: 'INVALID' });
@@ -244,6 +284,7 @@ function initSocket(httpServer) {
       msg.text       = '';
       msg.attachment = null;
       msg.pinned     = false;
+      msg.reactions  = [];
       await msg.save();
 
       // Remove the file from Cloudinary too (best effort, not awaited)

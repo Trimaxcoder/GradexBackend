@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { displayName } = require('../utils/displayName');
+const { groupReactions } = require('../utils/reactions');
 
 const { ObjectId } = mongoose.Schema.Types;
 
@@ -16,6 +17,15 @@ const AttachmentSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// One person's reaction to a message
+const ReactionSchema = new mongoose.Schema(
+  {
+    user:  { type: ObjectId, ref: 'User', required: true },
+    emoji: { type: String, required: true, maxlength: 8 },
+  },
+  { _id: false }
+);
+
 const MessageSchema = new mongoose.Schema(
   {
     class:   { type: ObjectId, ref: 'Class', required: true },
@@ -23,6 +33,7 @@ const MessageSchema = new mongoose.Schema(
     text:    { type: String, trim: true, maxlength: 2000, default: '' },
     attachment: { type: AttachmentSchema, default: null },
     replyTo: { type: ObjectId, ref: 'ClassMessage', default: null },
+    reactions: { type: [ReactionSchema], default: [] },
     pinned:  { type: Boolean, default: false },
     deleted: { type: Boolean, default: false }, // soft delete, text is wiped
     reportedBy: { type: [ObjectId], default: [], select: false },
@@ -72,6 +83,7 @@ MessageSchema.methods.toClient = function () {
     attachment,
     deleted:   !!this.deleted,
     pinned:    !!this.pinned,
+    reactions: this.deleted ? {} : groupReactions(this.reactions),
     replyTo,
     createdAt: this.createdAt,
   };
