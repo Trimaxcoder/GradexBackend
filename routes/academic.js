@@ -12,6 +12,7 @@ const {
   describeTerm,
   clearTermCache,
 } = require('../utils/academicTerm');
+const { adoptLegacyEntries } = require('../utils/timetableTerm');
 
 const requireSuperAdmin = (req, res, next) => {
   if (!req.user.isSuperAdmin) {
@@ -179,6 +180,7 @@ router.put('/calendars', auth, requireSuperAdmin, async (req, res, next) => {
     await calendar.save();
 
     clearTermCache(school);
+    await adoptLegacyEntries(school.trim());
     res.json({ message: 'Calendar saved', calendar: calendar.toClient() });
   } catch (err) {
     if (err.name === 'ValidationError') {

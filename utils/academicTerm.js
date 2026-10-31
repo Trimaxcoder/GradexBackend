@@ -118,7 +118,11 @@ function describeTerm(state) {
   };
 }
 
+/** Every semester of a school, oldest first. */
+const listTerms = (school) => loadTerms(school);
+
 module.exports = {
+  listTerms,
   parseDay,
   termId,
   getTermState,

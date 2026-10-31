@@ -34,6 +34,36 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const str = (v, max = 200) =>
   typeof v === "string" ? v.trim().slice(0, max) : "";
 
+/**
+ * Which class's timetable a user reads.
+ *  - Students: the class in their profile.
+ *  - Course reps: their verified class, so what they read is exactly the
+ *    timetable they manage, even if their profile level is edited.
+ */
+async function classForReading(user) {
+  if (user.isAdmin) {
+    await ensureAdminScope(user);
+    const s = user.adminScope;
+    if (s && s.school && s.faculty && s.department && s.level) {
+      return {
+        school: s.school,
+        faculty: s.faculty,
+        department: s.department,
+        level: s.level,
+        repScoped: true,
+      };
+    }
+  }
+  const p = user.profile || {};
+  return {
+    school: p.school,
+    faculty: p.faculty,
+    department: p.department,
+    level: p.level,
+    repScoped: false,
+  };
+}
+
 // Reject malformed ids early instead of letting Mongoose throw a CastError.
 router.param("id", (req, res, next, id) => {
   if (!mongoose.isValidObjectId(id)) {
@@ -172,7 +202,8 @@ async function pushToClass(entry, title, body, data) {
 // the app why (so it can show "waiting for the new semester").
 router.get("/lecture", auth, async (req, res, next) => {
   try {
-    const { school, faculty, department, level } = req.user.profile || {};
+    const { school, faculty, department, level, repScoped } =
+      await classForReading(req.user);
     if (!school || !faculty || !department || !level) {
       return res.json({
         entries: [],
@@ -198,13 +229,7 @@ router.get("/lecture", auth, async (req, res, next) => {
         ...query,
         term: state.current.term,
       }).sort(sort);
-    } else if (
-      state.status === "break" &&
-      state.targetTerm &&
-      req.user.isAdmin &&
-      req.user.adminScope &&
-      entryInScope(query, req.user.adminScope)
-    ) {
+    } else if (state.status === "break" && state.targetTerm && repScoped) {
       // The rep can see what they are preparing for the next semester.
       entries = await LectureEntry.find({
         ...query,
@@ -434,7 +459,8 @@ router.delete("/lecture/:id", auth, classAdmin, async (req, res, next) => {
 // GET /timetable/exam
 router.get("/exam", auth, async (req, res, next) => {
   try {
-    const { school, faculty, department, level } = req.user.profile || {};
+    const { school, faculty, department, level, repScoped } =
+      await classForReading(req.user);
     if (!school || !faculty || !department || !level) {
       return res.json({
         entries: [],
@@ -459,13 +485,7 @@ router.get("/exam", auth, async (req, res, next) => {
         ...query,
         term: state.current.term,
       }).sort(sort);
-    } else if (
-      state.status === "break" &&
-      state.targetTerm &&
-      req.user.isAdmin &&
-      req.user.adminScope &&
-      entryInScope(query, req.user.adminScope)
-    ) {
+    } else if (state.status === "break" && state.targetTerm && repScoped) {
       entries = await LectureEntry.find({
         ...query,
         term: state.targetTerm,
