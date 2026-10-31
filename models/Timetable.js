@@ -17,6 +17,13 @@ const lectureSchema = new mongoose.Schema({
   faculty:     { type: String, default: '' },
   department:  { type: String, default: '' },
   level:       { type: String, default: '' },
+
+  // The semester this entry belongs to, e.g. "2025/2026-1".
+  // Empty means "not stamped yet" (old entries, or a school with no academic
+  // calendar). Entries from a finished semester simply stop matching the
+  // current term, so they go quiet by themselves and nothing is deleted.
+  term:        { type: String, default: '' },
+
   isEmergency: { type: Boolean, default: false },
   isTest:      { type: Boolean, default: false },
   isAttendance:  { type: Boolean, default: false },
@@ -24,6 +31,8 @@ const lectureSchema = new mongoose.Schema({
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   updatedAt:   { type: Date, default: Date.now },
 }, { timestamps: true });
+
+lectureSchema.index({ school: 1, faculty: 1, department: 1, level: 1, type: 1, term: 1 });
 
 // ── Personal Entry ────────────────────────────────────────────────────────────
 const personalSchema = new mongoose.Schema({

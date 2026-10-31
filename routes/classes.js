@@ -212,8 +212,16 @@ router.get('/', wrap(async (req, res) => {
     archived: false,
   });
 
+  // Which of these classes have an anonymous session open right now
+  // (the share picker only offers those)
+  const openRows = await AnonSession
+    .find({ class: { $in: classes.map((c) => c._id) }, status: 'open' })
+    .select('class')
+    .lean();
+  const anonOpen = new Set(openRows.map((s) => String(s.class)));
+
   const rows = await Promise.all(classes.map(async (c) => {
-    const summary = classSummary(c, uid);
+    const summary = { ...classSummary(c, uid), anonOpen: anonOpen.has(String(c._id)) };
     const me = c.getMember(uid);
     if (!me || me.status !== 'active') return summary;
 
@@ -899,6 +907,9 @@ router.delete('/:id/anon/:sid/posts/:pid', loadClass, requireAdmin, wrap(async (
 
   post.hidden = true;
   await post.save();
+
+  // Replies that quoted this post must stop showing its text
+  await AnonPost.updateMany({ replyTo: post._id }, { $set: { replyText: '' } });
 
   if (req.query.block === 'true') {
     await AnonSession.updateOne({ _id: sid }, { $addToSet: { blockedTokens: post.tokenHash } });
