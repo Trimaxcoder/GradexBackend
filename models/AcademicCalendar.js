@@ -26,6 +26,17 @@ const SemesterSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// Per-department exceptions to the school's final-year level
+// (e.g. Engineering ends at 500 while most programs end at 400).
+const FinalLevelOverrideSchema = new mongoose.Schema(
+  {
+    faculty:    { type: String, default: '', trim: true },
+    department: { type: String, required: true, trim: true },
+    finalLevel: { type: String, enum: ['300', '400', '500', '600'], required: true },
+  },
+  { _id: false },
+);
+
 const AcademicCalendarSchema = new mongoose.Schema(
   {
     school:    { type: String, required: true, trim: true },
@@ -42,6 +53,22 @@ const AcademicCalendarSchema = new mongoose.Schema(
     // A promoted session is locked: it can no longer be edited or deleted.
     promotedAt: { type: Date, default: null },
 
+    // Move students up a level automatically after this session ends.
+    // Off unless the super admin turns it on for the session.
+    autoPromote: { type: Boolean, default: false },
+
+    // The last level of most programs at this school. A department that has
+    // students or timetables above it is never graduated early.
+    finalLevel: {
+      type: String,
+      enum: ['300', '400', '500', '600'],
+      default: '400',
+    },
+    finalLevelOverrides: { type: [FinalLevelOverrideSchema], default: [] },
+
+    // Held while a promotion runs so two runs can't overlap.
+    promotionLock: { type: Date, default: null },
+
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true },
@@ -49,41 +76,41 @@ const AcademicCalendarSchema = new mongoose.Schema(
 
 AcademicCalendarSchema.index({ schoolKey: 1, session: 1 }, { unique: true });
 
-function fail(next, message) {
+function fail(message) {
   const err = new Error(message);
   err.name = 'ValidationError';
-  return next(err);
+  return err;
 }
 
-AcademicCalendarSchema.pre('validate', function (next) {
-  if (!this.school || !this.session) return next(); // "required" will report it
+// Written without a `next` callback (it throws instead), which works on every
+// Mongoose version.
+AcademicCalendarSchema.pre('validate', function () {
+  if (!this.school || !this.session) return; // "required" will report it
   this.schoolKey = normalizeSchool(this.school);
 
   if (!/^\d{4}\/\d{4}$/.test(this.session)) {
-    return fail(next, 'Session must look like 2025/2026');
+    throw fail('Session must look like 2025/2026');
   }
   const [from, to] = this.session.split('/').map(Number);
   if (to !== from + 1) {
-    return fail(next, 'Session years must be consecutive, e.g. 2025/2026');
+    throw fail('Session years must be consecutive, e.g. 2025/2026');
   }
 
   const sems = [...this.semesters].sort((a, b) => a.number - b.number);
   if (sems.length < 1 || sems.length > 2) {
-    return fail(next, 'A session needs one or two semesters');
+    throw fail('A session needs one or two semesters');
   }
   if (new Set(sems.map((s) => s.number)).size !== sems.length) {
-    return fail(next, 'Each semester number can only be used once');
+    throw fail('Each semester number can only be used once');
   }
   for (const s of sems) {
     if (!(s.endDate > s.startDate)) {
-      return fail(next, `Semester ${s.number} must end after it starts`);
+      throw fail(`Semester ${s.number} must end after it starts`);
     }
   }
   if (sems.length === 2 && !(sems[1].startDate > sems[0].endDate)) {
-    return fail(next, 'Semester 2 must start after semester 1 ends');
+    throw fail('Semester 2 must start after semester 1 ends');
   }
-
-  next();
 });
 
 AcademicCalendarSchema.statics.normalizeSchool = normalizeSchool;
@@ -102,6 +129,13 @@ AcademicCalendarSchema.methods.toClient = function () {
         endDay: toDay(s.endDate),
       })),
     promotedAt: this.promotedAt,
+    autoPromote: this.autoPromote,
+    finalLevel: this.finalLevel,
+    finalLevelOverrides: (this.finalLevelOverrides || []).map((o) => ({
+      faculty: o.faculty,
+      department: o.department,
+      finalLevel: o.finalLevel,
+    })),
   };
 };
 

@@ -4,6 +4,7 @@ const FcmToken = require('../models/FcmToken');
 const { sendToTokens } = require('../config/firebase');
 const { getTermState, isClassTimeActive } = require('../utils/academicTerm');
 const { adoptLegacyEntries } = require('../utils/timetableTerm');
+const { runDuePromotions } = require('./promotion');
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -98,6 +99,14 @@ async function sendMorningDigests() {
   console.log(
     `Morning digest done for ${today}: ${sent} classes notified, ${onBreak} skipped (semester break)`,
   );
+
+  // Once a day: move students up for any session that has just ended and has
+  // auto-promote switched on. Runs after the digest so it can never delay it.
+  try {
+    await runDuePromotions();
+  } catch (err) {
+    console.error('Promotion check failed:', err);
+  }
 }
 
 function startMorningDigestJob() {

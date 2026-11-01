@@ -21,6 +21,8 @@ const requireSuperAdmin = (req, res, next) => {
   next();
 };
 
+const FINAL_LEVELS = ['300', '400', '500', '600'];
+
 function validationMessage(err) {
   const nested = err.errors && Object.values(err.errors)[0];
   return (nested && nested.message) || err.message;
@@ -114,7 +116,14 @@ router.get('/calendars', auth, requireSuperAdmin, async (req, res, next) => {
 //         semesters: [{ number: 1, startDay: "2025-10-06", endDay: "2026-02-20" }, ...] }
 router.put('/calendars', auth, requireSuperAdmin, async (req, res, next) => {
   try {
-    const { school, session, semesters } = req.body;
+    const {
+      school,
+      session,
+      semesters,
+      autoPromote,
+      finalLevel,
+      finalLevelOverrides,
+    } = req.body;
 
     if (typeof school !== 'string' || !school.trim()) {
       return res.status(400).json({ message: 'School is required' });
@@ -176,6 +185,41 @@ router.put('/calendars', auth, requireSuperAdmin, async (req, res, next) => {
       calendar = new AcademicCalendar({ school: school.trim(), session: sessionName });
     }
     calendar.semesters = parsed;
+
+    // Promotion settings. Anything not sent keeps its current value.
+    if (autoPromote !== undefined) {
+      calendar.autoPromote = autoPromote === true;
+    }
+    if (finalLevel !== undefined) {
+      if (!FINAL_LEVELS.includes(finalLevel)) {
+        return res
+          .status(400)
+          .json({ message: 'Final level must be 300, 400, 500 or 600' });
+      }
+      calendar.finalLevel = finalLevel;
+    }
+    if (finalLevelOverrides !== undefined) {
+      if (!Array.isArray(finalLevelOverrides)) {
+        return res
+          .status(400)
+          .json({ message: 'finalLevelOverrides must be a list' });
+      }
+      const cleaned = [];
+      for (const o of finalLevelOverrides) {
+        const faculty = typeof o?.faculty === 'string' ? o.faculty.trim() : '';
+        const department =
+          typeof o?.department === 'string' ? o.department.trim() : '';
+        if (!department || !FINAL_LEVELS.includes(o?.finalLevel)) {
+          return res.status(400).json({
+            message:
+              'Each department needs a name and a final level of 300, 400, 500 or 600',
+          });
+        }
+        cleaned.push({ faculty, department, finalLevel: o.finalLevel });
+      }
+      calendar.finalLevelOverrides = cleaned;
+    }
+
     calendar.updatedBy = req.user._id;
     await calendar.save();
 
@@ -217,5 +261,8 @@ router.delete(
     }
   },
 );
+
+// Promotion preview / run / undo (super admin)
+router.use(require('./promotion'));
 
 module.exports = router;

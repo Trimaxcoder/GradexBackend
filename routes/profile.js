@@ -1,7 +1,8 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const User    = require('../models/User');
-const Course  = require('../models/Course');
+const User     = require('../models/User');
+const Course   = require('../models/Course');
+const FcmToken = require('../models/FcmToken');
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();
@@ -35,10 +36,35 @@ router.put(
         if (req.body[field] !== undefined) updates[`profile.${field}`] = req.body[field];
       });
 
+      // A student who corrects their own level is no longer "graduated"
+      // (this is how anyone fixes a wrong automatic promotion themselves).
+      if (
+        updates['profile.level'] !== undefined &&
+        updates['profile.level'] !== (req.user.profile && req.user.profile.level)
+      ) {
+        updates['profile.graduated'] = false;
+      }
+
       const user = await User.findByIdAndUpdate(
         req.user._id,
         { $set: updates },
         { new: true, runValidators: true }
+      );
+
+      // Keep the notification scope in step with the profile, so class
+      // pushes follow a changed school / department / level straight away.
+      const p = user.profile || {};
+      await FcmToken.updateOne(
+        { user: user._id },
+        {
+          $set: {
+            school: p.school || '',
+            faculty: p.faculty || '',
+            department: p.department || '',
+            level: p.graduated ? '' : p.level || '',
+            updatedAt: new Date(),
+          },
+        }
       );
 
       res.json({ success: true, profile: user.profile });
@@ -82,10 +108,12 @@ router.put('/grading', async (req, res, next) => {
 });
 
 // ── DELETE /api/profile ───────────────────────────────────────────────────────
-// Deletes the account AND all associated courses
+// Deletes the account, all its courses and its push token (so the phone
+// stops getting class notifications for an account that no longer exists)
 router.delete('/', async (req, res, next) => {
   try {
     await Course.deleteMany({ userId: req.user._id });
+    await FcmToken.deleteMany({ user: req.user._id });
     await User.findByIdAndDelete(req.user._id);
     res.json({ success: true, message: 'Account and all data permanently deleted.' });
   } catch (err) {

@@ -21,9 +21,21 @@ const WAT = '+01:00';
 /** "2025-10-06" -> Date at 00:00 (or 23:59:59.999) Nigerian time, or null. */
 function parseDay(str, endOfDay = false) {
   if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+
+  // JavaScript silently turns 2025-02-30 into 2 March, so check the day is real.
+  const [y, m, day] = str.split('-').map(Number);
+  const check = new Date(Date.UTC(y, m - 1, day));
+  if (
+    check.getUTCFullYear() !== y ||
+    check.getUTCMonth() !== m - 1 ||
+    check.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
   const time = endOfDay ? '23:59:59.999' : '00:00:00.000';
   const d = new Date(`${str}T${time}${WAT}`);
-  return Number.isNaN(d.getTime()) ? null : d; // rejects things like 2025-02-30
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /** "2025/2026" + 1 -> "2025/2026-1". Stamped on timetable entries in step 5. */

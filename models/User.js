@@ -29,6 +29,8 @@ const StudentProfileSchema = new mongoose.Schema(
     email:        { type: String, default: '' },
     school:       { type: String, default: '' },
     level:        { type: String, default: '' }, 
+    graduated:     { type: Boolean, default: false },
+    promotedSession: { type: String,  default: '' },
   },
   { _id: false }
 );
