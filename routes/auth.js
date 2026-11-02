@@ -383,29 +383,32 @@ router.post("/reset-password", async (req, res, next) => {
 // ── POST /api/auth/google ─────────────────────────────────────────────────────
 router.post("/google", authLimiter, async (req, res, next) => {
   try {
-    const { idToken } = req.body;
-    if (!idToken) {
-      return res
-        .status(400)
-        .json({ success: false, message: "idToken is required." });
+    const { idToken, accessToken } = req.body;
+    if (!idToken && !accessToken) {
+      return res.status(400).json({ success: false, message: "Google token is required." });
     }
-    
-    console.log("=== CLIENT_ID:", process.env.GOOGLE_CLIENT_ID);
-    console.log("=== CLIENT_ID_ANDROID:", process.env.GOOGLE_CLIENT_ID_ANDROID);
-    console.log("=== idToken first 50 chars:", idToken?.slice(0, 50));
 
-    // Decode without verifying to see the audience
-    const decoded = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64').toString());
-    console.log("=== token audience:", decoded.aud);
-    console.log("=== token issuer:", decoded.iss);
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: [
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_ID_ANDROID,
-  ],
-    });
-    const { email, name, sub: googleId } = ticket.getPayload();
+    const allowed = [
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_ID_ANDROID,
+    ].filter(Boolean);
+
+    let email, name, googleId;
+
+    if (idToken) {
+      const ticket = await googleClient.verifyIdToken({ idToken, audience: allowed });
+      ({ email, name, sub: googleId } = ticket.getPayload());
+    } else {
+      const info = await googleClient.getTokenInfo(accessToken);
+      if (!allowed.includes(info.aud)) throw new Error("Token audience mismatch");
+
+      const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const p = await r.json();
+      if (!p.email || !p.email_verified) throw new Error("Email not verified");
+      ({ email, name, sub: googleId } = p);
+    }
 
     let user = await User.findOne({ email: email.toLowerCase() });
 
