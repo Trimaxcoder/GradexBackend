@@ -1,19 +1,31 @@
 const express = require('express');
 const router  = express.Router();
-const  { protect: auth }    = require('../middleware/auth');
+const { protect: auth } = require('../middleware/auth');
 const FcmToken = require('../models/FcmToken');
-const { sendMorningDigests } = require('../jobs/morningDigest');
 
 // ── Save / update FCM token for logged-in user ───────────────────────────
 // POST /notifications/token
+// The class (school / faculty / department / level) comes from the user's
+// profile on the server, so pushes always match what the server knows and
+// stay correct after a level change or promotion. The values in the request
+// are only used when the profile has none yet.
 router.post('/token', auth, async (req, res, next) => {
   try {
     const { token, school, faculty, department, level } = req.body;
     if (!token) return res.status(400).json({ message: 'Token required' });
 
+    const p = req.user.profile || {};
+
     await FcmToken.findOneAndUpdate(
       { user: req.user._id },
-      { token, school, faculty, department, level, updatedAt: new Date() },
+      {
+        token,
+        school: p.school || school || '',
+        faculty: p.faculty || faculty || '',
+        department: p.department || department || '',
+        level: p.graduated ? '' : p.level || level || '',
+        updatedAt: new Date(),
+      },
       { upsert: true, new: true }
     );
 

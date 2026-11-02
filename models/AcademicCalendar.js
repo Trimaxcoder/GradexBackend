@@ -32,7 +32,7 @@ const FinalLevelOverrideSchema = new mongoose.Schema(
   {
     faculty:    { type: String, default: '', trim: true },
     department: { type: String, required: true, trim: true },
-    finalLevel: { type: String, enum: ['300', '400', '500', '600'], required: true },
+    finalLevel: { type: String, enum: ['300', '400', '500', '600', '700'], required: true },
   },
   { _id: false },
 );
@@ -61,13 +61,16 @@ const AcademicCalendarSchema = new mongoose.Schema(
     // students or timetables above it is never graduated early.
     finalLevel: {
       type: String,
-      enum: ['300', '400', '500', '600'],
+      enum: ['300', '400', '500', '600', '700'],
       default: '400',
     },
     finalLevelOverrides: { type: [FinalLevelOverrideSchema], default: [] },
 
     // Held while a promotion runs so two runs can't overlap.
     promotionLock: { type: Date, default: null },
+
+    // Semesters whose "update your classes" notice to reps has been sent.
+    startNotified: { type: [Number], default: [] },
 
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

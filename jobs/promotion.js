@@ -96,7 +96,11 @@ async function planPromotion(cal) {
   };
   for (const u of users) {
     const p = u.profile || {};
-    if (!p.graduated) see(p.faculty, p.department, p.level);
+    if (!p.graduated) {
+      see(p.faculty, p.department, p.level);
+      // a student's own last level is evidence the department runs that long
+      see(p.faculty, p.department, p.finalLevel);
+    }
   }
   const entryLevels = await LectureEntry.aggregate([
     { $match: { school: { $in: schools }, type: 'lecture' } },
@@ -149,19 +153,23 @@ async function planPromotion(cal) {
     } else if (n === null) {
       stats.skippedLevel++; // level not in the 100–900 format; leave alone
     } else {
-      const final = finalFor(p.faculty, p.department);
+      // The student's own last level wins; otherwise the department's.
+      const own = levelNumber(p.finalLevel);
+      const final = own && own >= n ? own : finalFor(p.faculty, p.department);
       const outcome = n >= final ? 'graduate' : 'promote';
 
       const key = deptKey(p.faculty, p.department);
       const dept = byDept.get(key) || {
         faculty: p.faculty || '',
         department: p.department || '',
-        finalLevel: String(final),
+        finalLevel: String(finalFor(p.faculty, p.department)),
         levels: {},
       };
-      const lvl = dept.levels[p.level] || { count: 0, outcome };
+      // one row per level and outcome (students at one level can differ)
+      const rowKey = `${p.level}|${outcome}`;
+      const lvl = dept.levels[rowKey] || { level: p.level, count: 0, outcome };
       lvl.count++;
-      dept.levels[p.level] = lvl;
+      dept.levels[rowKey] = lvl;
       byDept.set(key, dept);
 
       change.levelFrom = p.level;
@@ -186,7 +194,10 @@ async function planPromotion(cal) {
           department: s.department,
           level: s.level,
         };
-        if (sn >= finalFor(s.faculty, s.department)) {
+        const ownRep = levelNumber(p.finalLevel);
+        const repFinal =
+          ownRep && ownRep >= sn ? ownRep : finalFor(s.faculty, s.department);
+        if (sn >= repFinal) {
           change.scopeAction = 'revoke'; // their class graduated
           stats.repsEnded++;
         } else {
@@ -206,9 +217,13 @@ async function planPromotion(cal) {
       faculty: d.faculty,
       department: d.department,
       finalLevel: d.finalLevel,
-      levels: Object.entries(d.levels)
-        .sort((a, b) => Number(a[0]) - Number(b[0]))
-        .map(([level, v]) => ({ level, count: v.count, outcome: v.outcome })),
+      levels: Object.values(d.levels)
+        .sort(
+          (a, b) =>
+            Number(a.level) - Number(b.level) ||
+            a.outcome.localeCompare(b.outcome),
+        )
+        .map((v) => ({ level: v.level, count: v.count, outcome: v.outcome })),
     }))
     .sort(
       (a, b) =>

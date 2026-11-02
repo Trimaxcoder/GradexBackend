@@ -21,7 +21,7 @@ const requireSuperAdmin = (req, res, next) => {
   next();
 };
 
-const FINAL_LEVELS = ['300', '400', '500', '600'];
+const FINAL_LEVELS = ['300', '400', '500', '600', '700'];
 
 function validationMessage(err) {
   const nested = err.errors && Object.values(err.errors)[0];
@@ -194,7 +194,7 @@ router.put('/calendars', auth, requireSuperAdmin, async (req, res, next) => {
       if (!FINAL_LEVELS.includes(finalLevel)) {
         return res
           .status(400)
-          .json({ message: 'Final level must be 300, 400, 500 or 600' });
+          .json({ message: 'Final level must be between 300 and 700' });
       }
       calendar.finalLevel = finalLevel;
     }
@@ -212,7 +212,7 @@ router.put('/calendars', auth, requireSuperAdmin, async (req, res, next) => {
         if (!department || !FINAL_LEVELS.includes(o?.finalLevel)) {
           return res.status(400).json({
             message:
-              'Each department needs a name and a final level of 300, 400, 500 or 600',
+              'Each department needs a name and a final level between 300 and 700',
           });
         }
         cleaned.push({ faculty, department, finalLevel: o.finalLevel });

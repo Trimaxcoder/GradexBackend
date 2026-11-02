@@ -7,44 +7,111 @@ const FcmToken = require("../models/FcmToken");
 const { sendToTokens } = require("../config/firebase");
 const { sendMorningDigests } = require("../jobs/morningDigest");
 const { ensureAdminScope } = require("../utils/adminScope");
+const { getTermState } = require("../utils/academicTerm");
+const {
+  norm,
+  normMatric,
+  sameClass,
+  validateRepRequest,
+} = require("../utils/repRequest");
+
+const MAX_REPS_PER_CLASS = 2;
+
+const requireSuperAdmin = (req, res, next) => {
+  if (!req.user.isSuperAdmin) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  next();
+};
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const exactCI = (s) =>
+  new RegExp("^\\s*" + escapeRe(String(s).trim()) + "\\s*$", "i");
+
+/** How many reps a class already has (older reps without a saved class count too). */
+async function countClassAdmins(scope, excludeUserId = null) {
+  const base = { isAdmin: true };
+  if (excludeUserId) base._id = { $ne: excludeUserId };
+  return User.countDocuments({
+    ...base,
+    $or: [
+      {
+        "adminScope.school": scope.school,
+        "adminScope.faculty": scope.faculty,
+        "adminScope.department": scope.department,
+        "adminScope.level": scope.level,
+      },
+      {
+        adminScope: { $exists: false },
+        "profile.school": scope.school,
+        "profile.faculty": scope.faculty,
+        "profile.department": scope.department,
+        "profile.level": scope.level,
+      },
+    ],
+  });
+}
+
+/** The checklist the super admin sees on each pending request. */
+async function buildChecks(r) {
+  const u = r.user || {};
+  const p = u.profile || {};
+
+  let calendarSemester = null;
+  let termStatus = "unconfigured";
+  if (r.school) {
+    const state = await getTermState(r.school);
+    termStatus = state.status;
+    calendarSemester =
+      state.status === "active"
+        ? state.current.semester
+        : state.upcoming
+          ? state.upcoming.semester
+          : null;
+  }
+
+  const classAdmins = await countClassAdmins(r, u._id);
+
+  let duplicateMatric = false;
+  if (p.matricNumber && p.school) {
+    const n = await User.countDocuments({
+      _id: { $ne: u._id },
+      "profile.matricNumber": exactCI(p.matricNumber),
+      "profile.school": exactCI(p.school),
+    });
+    duplicateMatric = n > 0;
+  }
+
+  return {
+    nameMatches: norm(r.fullName) === norm(p.name),
+    matricMatches: normMatric(r.matricNumber) === normMatric(p.matricNumber),
+    profileClassMatches: sameClass(r, p),
+    semester: {
+      declared: r.semester ?? null,
+      calendar: calendarSemester,
+      matches:
+        calendarSemester == null || r.semester == null
+          ? null
+          : r.semester === calendarSemester,
+      termStatus,
+    },
+    classAdmins,
+    duplicateMatric,
+  };
+}
 
 // POST /api/admin/request
+// The student confirms their details; the server checks them against the profile.
 router.post("/request", auth, async (req, res, next) => {
   try {
-    const { reason } = req.body;
-
-    // 1. Validate reason
-    if (!reason || reason.trim().length < 20) {
-      return res.status(400).json({
-        message: "Please provide a reason of at least 20 characters",
-      });
+    const checked = validateRepRequest(req.user.profile, req.body);
+    if (checked.error) {
+      return res.status(400).json({ message: checked.error });
     }
+    const v = checked.values;
+    const { school, faculty, department } = req.user.profile;
 
-    // 2. Pull profile from DB (prevents spoofing)
-    const { school, faculty, department, level } = req.user.profile || {};
-
-    if (!school || !faculty || !department || !level) {
-      return res.status(400).json({
-        message:
-          "Please complete your profile (school, faculty, department, level) before requesting admin access",
-      });
-    }
-
-    // 3. Max 2 admins per dept/level
-    const existingAdmins = await User.countDocuments({
-      isAdmin: true,
-      "profile.school": school,
-      "profile.faculty": faculty,
-      "profile.department": department,
-      "profile.level": level,
-    });
-    if (existingAdmins >= 2) {
-      return res.status(400).json({
-        message: "This department/level already has 2 admins.",
-      });
-    }
-
-    // 4. No duplicate pending request
+    // No duplicate pending/approved request
     const existing = await AdminRequest.findOne({
       user: req.user._id,
       status: { $in: ["pending", "approved"] },
@@ -58,14 +125,30 @@ router.post("/request", auth, async (req, res, next) => {
       });
     }
 
-    // 5. Create using verified DB profile data
+    // A class can have at most 2 reps
+    const reps = await countClassAdmins({
+      school,
+      faculty,
+      department,
+      level: v.level,
+    });
+    if (reps >= MAX_REPS_PER_CLASS) {
+      return res.status(400).json({
+        message: "This department/level already has 2 admins.",
+      });
+    }
+
     const request = await AdminRequest.create({
       user: req.user._id,
       school,
       faculty,
       department,
-      level,
-      reason: reason.trim(),
+      level: v.level,
+      fullName: v.fullName,
+      matricNumber: v.matricNumber,
+      semester: v.semester,
+      finalLevel: v.finalLevel,
+      reason: v.reason,
       proofUrl: "",
     });
 
@@ -96,15 +179,18 @@ router.get("/status", auth, async (req, res, next) => {
 });
 
 // GET /api/admin/pending (super admin only)
-router.get("/pending", auth, async (req, res, next) => {
+router.get("/pending", auth, requireSuperAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isSuperAdmin) {
-      return res.status(403).json({ message: "Forbidden" });
+    const rows = await AdminRequest.find({ status: "pending" })
+      .populate("user", "email profile isAdmin")
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const requests = [];
+    for (const r of rows) {
+      if (!r.user) continue; // the student deleted their account
+      requests.push({ ...r, checks: await buildChecks(r) });
     }
-    const requests = await AdminRequest.find({ status: "pending" }).populate(
-      "user",
-      "email profile",
-    );
     res.json({ requests });
   } catch (err) {
     next(err);
@@ -112,12 +198,8 @@ router.get("/pending", auth, async (req, res, next) => {
 });
 
 // PUT /api/admin/review/:id (super admin only)
-router.put("/review/:id", auth, async (req, res, next) => {
+router.put("/review/:id", auth, requireSuperAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isSuperAdmin) {
-      return res.status(403).json({ message: "Forbidden" });
-    }
-
     const { status, reviewNote } = req.body;
     if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({ message: "Invalid status" });
@@ -125,6 +207,31 @@ router.put("/review/:id", auth, async (req, res, next) => {
 
     const request = await AdminRequest.findById(req.params.id).populate("user");
     if (!request) return res.status(404).json({ message: "Request not found" });
+    if (request.status !== "pending") {
+      return res.status(409).json({ message: "This request was already reviewed." });
+    }
+    if (!request.user) {
+      return res.status(409).json({ message: "This student no longer exists." });
+    }
+
+    if (status === "approved") {
+      const student = request.user;
+      const p = student.profile || {};
+
+      if (student.isAdmin) {
+        return res.status(409).json({ message: "This student is already an admin." });
+      }
+      // The class on the request must still be the student's class
+      if (!sameClass(request, p)) {
+        return res.status(409).json({
+          message: `The student's profile changed since they applied (now ${p.department || "?"}, ${p.level || "?"} level). Reject this request and ask them to apply again.`,
+        });
+      }
+      const reps = await countClassAdmins(request, student._id);
+      if (reps >= MAX_REPS_PER_CLASS) {
+        return res.status(409).json({ message: "This class already has 2 reps." });
+      }
+    }
 
     request.status = status;
     request.reviewNote = reviewNote || "";
@@ -132,22 +239,22 @@ router.put("/review/:id", auth, async (req, res, next) => {
     request.updatedAt = new Date();
     await request.save();
 
+    const fcmDoc = await FcmToken.findOne({ user: request.user._id });
+
     if (status === "approved") {
-      await User.findByIdAndUpdate(request.user._id, {
+      const update = {
         isAdmin: true,
-        "profile.school": request.school,
-        "profile.faculty": request.faculty,
-        "profile.department": request.department,
-        "profile.level": request.level,
+        // The class they manage is fixed here, by the super admin
         adminScope: {
           school: request.school,
           faculty: request.faculty,
           department: request.department,
           level: request.level,
         },
-      });
+      };
+      if (request.finalLevel) update["profile.finalLevel"] = request.finalLevel;
+      await User.findByIdAndUpdate(request.user._id, update);
 
-      const fcmDoc = await FcmToken.findOne({ user: request.user._id });
       if (fcmDoc?.token) {
         await sendToTokens(
           [fcmDoc.token],
@@ -156,16 +263,13 @@ router.put("/review/:id", auth, async (req, res, next) => {
           { type: "admin_approved" },
         );
       }
-    } else {
-      const fcmDoc = await FcmToken.findOne({ user: request.user._id });
-      if (fcmDoc?.token) {
-        await sendToTokens(
-          [fcmDoc.token],
-          "Admin Request Update",
-          reviewNote || "Your admin request was not approved.",
-          { type: "admin_rejected" },
-        );
-      }
+    } else if (fcmDoc?.token) {
+      await sendToTokens(
+        [fcmDoc.token],
+        "Admin Request Update",
+        reviewNote || "Your admin request was not approved.",
+        { type: "admin_rejected" },
+      );
     }
 
     res.json({ message: `Request ${status}`, request });
@@ -181,13 +285,12 @@ router.post("/resign", auth, async (req, res, next) => {
       return res.status(400).json({ message: "You are not an admin." });
     }
 
-    // Remove admin rights
+    // Remove admin rights and the class they managed
     await User.findByIdAndUpdate(req.user._id, {
       isAdmin: false,
       $unset: { adminScope: 1 },
     });
 
-    // Update their admin request status
     await AdminRequest.findOneAndUpdate(
       { user: req.user._id, status: "approved" },
       { status: "resigned", updatedAt: new Date() },
@@ -200,12 +303,8 @@ router.post("/resign", auth, async (req, res, next) => {
 });
 
 // DELETE /api/admin/revoke/:userId — super admin revokes someone's admin
-router.delete("/revoke/:userId", auth, async (req, res, next) => {
+router.delete("/revoke/:userId", auth, requireSuperAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isSuperAdmin) {
-      return res.status(403).json({ message: "Forbidden" });
-    }
-
     const target = await User.findById(req.params.userId);
     if (!target) {
       return res.status(404).json({ message: "User not found." });
@@ -214,19 +313,16 @@ router.delete("/revoke/:userId", auth, async (req, res, next) => {
       return res.status(400).json({ message: "User is not an admin." });
     }
 
-    // Remove admin rights
     await User.findByIdAndUpdate(req.params.userId, {
       isAdmin: false,
       $unset: { adminScope: 1 },
     });
 
-    // Update their admin request status
     await AdminRequest.findOneAndUpdate(
       { user: req.params.userId, status: "approved" },
       { status: "revoked", updatedAt: new Date() },
     );
 
-    // Notify the revoked user
     const fcmDoc = await FcmToken.findOne({ user: req.params.userId });
     if (fcmDoc?.token) {
       await sendToTokens(
@@ -244,11 +340,8 @@ router.delete("/revoke/:userId", auth, async (req, res, next) => {
 });
 
 // GET /api/admin/all — super admin sees all current admins
-router.get("/all", auth, async (req, res, next) => {
+router.get("/all", auth, requireSuperAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isSuperAdmin) {
-      return res.status(403).json({ message: "Forbidden" });
-    }
     const admins = await User.find({ isAdmin: true }).select(
       "email profile adminScope createdAt",
     );

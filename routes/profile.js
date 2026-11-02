@@ -4,11 +4,14 @@ const User     = require('../models/User');
 const Course   = require('../models/Course');
 const FcmToken = require('../models/FcmToken');
 const { protect } = require('../middleware/auth');
+const { norm, levelNum } = require('../utils/repRequest');
 
 const router = express.Router();
 
 // All routes are protected
 router.use(protect);
+
+const CLASS_FIELDS = ['school', 'faculty', 'department', 'level'];
 
 // ── GET /api/profile ──────────────────────────────────────────────────────────
 router.get('/', (req, res) => {
@@ -30,19 +33,73 @@ router.put(
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
+      const current = req.user.profile || {};
+
+      // A class rep manages one class. To move to another school, faculty,
+      // department or level they must resign as rep first (the app offers this).
+      if (req.user.isAdmin) {
+        const changed = CLASS_FIELDS.filter(
+          (f) => req.body[f] !== undefined && norm(req.body[f]) !== norm(current[f])
+        );
+        if (changed.length > 0) {
+          const s = req.user.adminScope || {};
+          return res.status(409).json({
+            success: false,
+            code: 'ADMIN_MUST_RESIGN',
+            fields: changed,
+            message: `You are the class rep for ${s.department || current.department} ${s.level || current.level} level. Resign as rep before changing your ${changed.join(', ')}.`,
+          });
+        }
+      }
+
       const allowed = ['name', 'matricNumber', 'department', 'faculty', 'email', 'school', 'level'];
       const updates = {};
       allowed.forEach((field) => {
         if (req.body[field] !== undefined) updates[`profile.${field}`] = req.body[field];
       });
 
-      // A student who corrects their own level is no longer "graduated"
-      // (this is how anyone fixes a wrong automatic promotion themselves).
-      if (
+      // Last level before graduation (optional; empty clears it)
+      if (req.body.finalLevel !== undefined) {
+        const fl = String(req.body.finalLevel).trim();
+        if (fl !== '') {
+          const flNum = levelNum(fl);
+          if (flNum === null) {
+            return res.status(400).json({
+              success: false,
+              message: 'Last level before graduation must be 100, 200 … up to 700.',
+            });
+          }
+          const lvlNum = levelNum(req.body.level !== undefined ? req.body.level : current.level);
+          if (lvlNum !== null && flNum < lvlNum) {
+            return res.status(400).json({
+              success: false,
+              message: 'Your last level cannot be lower than your current level.',
+            });
+          }
+        }
+        updates['profile.finalLevel'] = fl;
+      }
+
+      const levelChanged =
         updates['profile.level'] !== undefined &&
-        updates['profile.level'] !== (req.user.profile && req.user.profile.level)
-      ) {
+        updates['profile.level'] !== current.level;
+
+      if (levelChanged) {
+        // Correcting your own level means you are no longer "graduated"
+        // (this is how anyone fixes a wrong automatic promotion).
         updates['profile.graduated'] = false;
+
+        // A last level below the new level no longer makes sense; clear it
+        // so the system falls back to the department's.
+        const newLevel = levelNum(updates['profile.level']);
+        const finalNow = levelNum(
+          updates['profile.finalLevel'] !== undefined
+            ? updates['profile.finalLevel']
+            : current.finalLevel
+        );
+        if (newLevel !== null && finalNow !== null && finalNow < newLevel) {
+          updates['profile.finalLevel'] = '';
+        }
       }
 
       const user = await User.findByIdAndUpdate(

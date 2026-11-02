@@ -1,19 +1,37 @@
+// models/AdminRequest.js
 const mongoose = require('mongoose');
 
-const adminRequestSchema = new mongoose.Schema({
-  user:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  school:     { type: String, required: true },
-  faculty:    { type: String, required: true },
-  department: { type: String, required: true },
-  level:      { type: String, required: true },
-  reason:     { type: String, required: true },
-  // e.g. student ID card, course rep appointment letter
-  proofUrl:   { type: String, default: '' },
-  status:     { type: String, enum: ['pending', 'approved', 'rejected', 'resigned', 'revoked'], default: 'pending' },
-  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  reviewNote: { type: String, default: '' },
-  createdAt:  { type: Date, default: Date.now },
-  updatedAt:  { type: Date, default: Date.now },
-});
+const AdminRequestSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
 
-module.exports = mongoose.model('AdminRequest', adminRequestSchema);
+    // The class the student asks to manage (taken from their profile)
+    school:     { type: String, default: '' },
+    faculty:    { type: String, default: '' },
+    department: { type: String, default: '' },
+    level:      { type: String, default: '' },
+
+    // What the student confirmed on the request screen
+    fullName:     { type: String, default: '' },
+    matricNumber: { type: String, default: '' },
+    semester:     { type: Number, enum: [1, 2], default: null },
+    finalLevel:   { type: String, default: '' }, // last level before graduation
+
+    reason:   { type: String, default: '' }, // optional now
+    proofUrl: { type: String, default: '' },
+
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'resigned', 'revoked'],
+      default: 'pending',
+    },
+    reviewNote: { type: String, default: '' },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedAt:  { type: Date, default: Date.now },
+  },
+  { timestamps: true },
+);
+
+AdminRequestSchema.index({ user: 1, status: 1 });
+
+module.exports = mongoose.model('AdminRequest', AdminRequestSchema);

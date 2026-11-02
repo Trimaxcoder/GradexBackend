@@ -5,6 +5,7 @@ const { sendToTokens } = require('../config/firebase');
 const { getTermState, isClassTimeActive } = require('../utils/academicTerm');
 const { adoptLegacyEntries } = require('../utils/timetableTerm');
 const { runDuePromotions } = require('./promotion');
+const { runSemesterStartNotices } = require('./semesterStart');
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -106,6 +107,13 @@ async function sendMorningDigests() {
     await runDuePromotions();
   } catch (err) {
     console.error('Promotion check failed:', err);
+  }
+
+  // Then tell class reps when a new semester has started.
+  try {
+    await runSemesterStartNotices();
+  } catch (err) {
+    console.error('Semester start notices failed:', err);
   }
 }
 
