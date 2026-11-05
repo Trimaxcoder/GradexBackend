@@ -51,12 +51,18 @@ const inviteLink = (code) =>
 
 const activeCount = (cls) => cls.members.filter((m) => m.status === 'active').length;
 
-const classSummary = (cls, userId) => {
-  const me = cls.getMember(userId);
+// For a private chat the "class name" is the other person's name.
+// peer = the other person's User document (needs profile.name and username).
+const classSummary = (cls, userId, peer) => {
+  const me   = cls.getMember(userId);
+  const isDm = cls.kind === 'dm';
   const out = {
     id:              String(cls._id),
-    name:            cls.name,
-    description:     cls.description,
+    kind:            isDm ? 'dm' : 'group',
+    name:            isDm ? displayName(peer, 'Student') : cls.name,
+    peerId:          isDm && peer ? String(peer._id) : null,
+    peerUsername:    isDm && peer ? (peer.username || '') : '',
+    description:     isDm ? '' : cls.description,
     requireApproval: cls.requireApproval,
     chatLocked:      cls.chatLocked,
     archived:        cls.archived,
@@ -67,11 +73,29 @@ const classSummary = (cls, userId) => {
     createdAt:       cls.createdAt,
   };
   // Active members can share the code; pending members can't see it
-  if (me && me.status === 'active') {
+  // (private chats have no code or link)
+  if (me && me.status === 'active' && !isDm) {
     out.joinCode   = cls.joinCode;
     out.inviteLink = inviteLink(cls.joinCode);
   }
   return out;
+};
+
+// The other person in each private chat, keyed by class id
+const peersOf = async (classes, userId) => {
+  const mine = String(userId);
+  const pairs = [];
+  for (const c of classes) {
+    if (c.kind !== 'dm') continue;
+    const other = c.members.find((m) => String(m.user) !== mine);
+    if (other) pairs.push([String(c._id), other.user]);
+  }
+  if (!pairs.length) return new Map();
+
+  const users = await User.find({ _id: { $in: pairs.map((p) => p[1]) } })
+    .select('profile.name username');
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  return new Map(pairs.map(([cid, uid]) => [cid, byId.get(String(uid))]));
 };
 
 // ── Middleware: load class + the caller's membership ──────────────────────────
@@ -144,7 +168,9 @@ router.post('/', wrap(async (req, res) => {
     return fail(res, 400, 'Description can be at most 500 characters.');
   }
 
-  const owned = await Class.countDocuments({ owner: req.user._id, archived: false });
+  const owned = await Class.countDocuments({
+    owner: req.user._id, archived: false, kind: { $ne: 'dm' },
+  });
   if (owned >= MAX_OWNED_CLASSES) {
     return fail(res, 400, `You can own up to ${MAX_OWNED_CLASSES} active classes.`);
   }
@@ -220,8 +246,13 @@ router.get('/', wrap(async (req, res) => {
     .lean();
   const anonOpen = new Set(openRows.map((s) => String(s.class)));
 
+  const peers = await peersOf(classes, uid);
+
   const rows = await Promise.all(classes.map(async (c) => {
-    const summary = { ...classSummary(c, uid), anonOpen: anonOpen.has(String(c._id)) };
+    const summary = {
+      ...classSummary(c, uid, peers.get(String(c._id))),
+      anonOpen: anonOpen.has(String(c._id)),
+    };
     const me = c.getMember(uid);
     if (!me || me.status !== 'active') return summary;
 
@@ -252,7 +283,7 @@ router.post('/join', joinLimiter, wrap(async (req, res) => {
   }
 
   const uid = req.user._id;
-  const cls = await Class.findOne({ joinCode: code, archived: false });
+  const cls = await Class.findOne({ joinCode: code, archived: false, kind: { $ne: 'dm' } });
   if (!cls) return fail(res, 404, 'No class found with that code.');
 
   const existing = cls.getMember(uid);
@@ -315,9 +346,11 @@ router.get('/:id', loadClass, requireMember, wrap(async (req, res) => {
       .populate(ClassMessage.POPULATE),
   ]);
 
+  const peers = await peersOf([cls], req.user._id);
+
   res.json({
     success: true,
-    class: classSummary(cls, req.user._id),
+    class: classSummary(cls, req.user._id, peers.get(String(cls._id))),
     activeAnonSession: open ? open.toClient() : null,
     pinned: pinned.map((m) => m.toClient()),
     receipts: receiptsFor(cls, req.user._id),
@@ -455,6 +488,7 @@ router.post('/:id/regenerate-code', loadClass, requireAdmin, wrap(async (req, re
 // POST /api/classes/:id/archive  → owner only, closes the class for everyone
 router.post('/:id/archive', loadClass, wrap(async (req, res) => {
   const { cls } = req;
+  if (cls.kind === 'dm') return fail(res, 400, 'Private chats cannot be archived.');
   if (String(cls.owner) !== String(req.user._id)) {
     return fail(res, 403, 'Only the class owner can archive it.');
   }
@@ -573,6 +607,7 @@ router.put('/:id/members/:userId', loadClass, requireAdmin, wrap(async (req, res
 // Leave the class (own id) or remove someone (admins). Also cancels a pending request.
 router.delete('/:id/members/:userId', loadClass, wrap(async (req, res) => {
   const { cls } = req;
+  if (cls.kind === 'dm') return fail(res, 400, 'To leave a private chat, remove the friend instead.');
   const targetId = req.params.userId;
   const uid      = String(req.user._id);
 

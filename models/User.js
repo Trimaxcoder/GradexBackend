@@ -90,6 +90,15 @@ const UserSchema = new mongoose.Schema(
       match: /^[a-z0-9_.]+$/,
     },
 
+    // ── Friends ─────────────────────────────────────────────────────────────
+    // true = other students can find me by name or username and send a friend
+    // request. Turning it off hides me from search; classmates can still reach
+    // me by tapping my name in a class.
+    findable: {
+      type: Boolean,
+      default: true,
+    },
+
     // ── Google OAuth ────────────────────────────────────────────────────────
     googleId: {
       type: String,

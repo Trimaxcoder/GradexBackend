@@ -55,11 +55,25 @@ const ClassSchema = new mongoose.Schema(
     chatLocked:      { type: Boolean, default: false }, // true = only admins can post
     archived:        { type: Boolean, default: false },
     members:         { type: [MemberSchema], default: [] },
+
+    // 'group' = a normal class. 'dm' = a private chat between two friends.
+    // A private chat reuses everything a class chat has (messages, voice
+    // notes, replies, reactions) but it has no code, no admins and no
+    // anonymous sessions.
+    kind: { type: String, enum: ['group', 'dm'], default: 'group' },
+
+    // Only for private chats: "<smaller user id>:<bigger user id>", so the
+    // same two people can never end up with two chats.
+    dmKey: { type: String },
   },
   { timestamps: true }
 );
 
 ClassSchema.index({ 'members.user': 1 });
+ClassSchema.index(
+  { dmKey: 1 },
+  { unique: true, partialFilterExpression: { dmKey: { $type: 'string' } } }
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 ClassSchema.methods.getMember = function (userId) {
