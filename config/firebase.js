@@ -41,7 +41,9 @@ async function sendToTokens(tokens, title, body, data = {}) {
       },
       android: {
         notification: {
-          icon: 'ic_notification', // small status bar icon (uses your app's mipmap if set)
+          icon: 'ic_notification',   // the white "SL" status bar icon
+          color: '#1565C0',
+          channelId: 'gradex_channel',
           imageUrl: APP_ICON_URL,
         },
       },
@@ -65,4 +67,6 @@ async function sendToTokens(tokens, title, body, data = {}) {
   }
 }
 
-module.exports = { sendToTokens };
+// getFirebaseAdmin is shared so chat pushes (utils/classPush.js) start
+// Firebase the same way announcements do.
+module.exports = { sendToTokens, getFirebaseAdmin };
