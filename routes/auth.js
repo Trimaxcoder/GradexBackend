@@ -30,6 +30,11 @@ const brevo = new BrevoClient({ apiKey: process.env.BREVO_API_KEY });
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── Helper ────────────────────────────────────────────────────────────────────
+const profileNeeded = (u) => {
+  const p = u.profile || {};
+  return !(p.name && p.matricNumber && p.school && p.faculty && p.department && p.level);
+};
+
 const sendTokens = async (user, statusCode, res) => {
   const accessToken = generateAccessToken(user._id);
   const refreshToken = generateRefreshToken(user._id);
@@ -46,6 +51,7 @@ const sendTokens = async (user, statusCode, res) => {
       email: user.email,
       profile: user.profile,
       grading: user.grading,
+      needsProfile: profileNeeded(user),
     },
   });
 };
@@ -418,7 +424,7 @@ router.post("/google", authLimiter, async (req, res, next) => {
         email: email.toLowerCase(),
         googleId,
         password: crypto.randomBytes(32).toString("hex"), // random, never used
-        profile: { name, email },
+        profile: { name: "", email },
         grading: { rules: [] },
       });
     } else if (!user.googleId) {
