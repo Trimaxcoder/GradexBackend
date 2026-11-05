@@ -16,37 +16,44 @@
 const Class    = require('../models/Class');
 const FcmToken = require('../models/FcmToken');
 
-let admin = null;
-try {
-  admin = require('firebase-admin');
-} catch (_) {
-  admin = null;
-}
-
-// Loading your Firebase setup file makes sure Firebase Admin is started even
-// if nothing else has sent a push yet (announcements start it the first time
-// they send, which is why they could work while chat did not).
-try {
-  require('../config/firebase');
-} catch (err) {
-  console.warn('classPush: could not load config/firebase:', err.message);
-}
+// Uses the same Firebase startup as announcements (config/firebase.js).
+const firebaseSetup = require('../config/firebase');
 
 // 0 = no quiet gap: every message is pushed (a newer one replaces the old one)
 const PUSH_GAP_MS = 0;
 const BODY_MAX    = 110;
 
-let warned = false;
+let ownApp = null;
 
 function getMessaging() {
-  if (!admin || !admin.apps || admin.apps.length === 0) {
-    if (!warned) {
-      warned = true;
-      console.warn('classPush: Firebase Admin is not initialized, so class push notifications are off.');
+  try {
+    // Normal path: the same startup announcements use
+    if (typeof firebaseSetup.getFirebaseAdmin === 'function') {
+      return firebaseSetup.getFirebaseAdmin().messaging();
     }
+
+    // config/firebase.js has not been updated yet: start a separate, named
+    // Firebase app from the same environment variables. A named app can never
+    // clash with the one announcements start.
+    console.warn('classPush: config/firebase.js does not export getFirebaseAdmin; using its own Firebase app.');
+    const admin = require('firebase-admin');
+    if (!ownApp) {
+      ownApp = admin.initializeApp(
+        {
+          credential: admin.credential.cert({
+            projectId:   process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey:  process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+          }),
+        },
+        'classPush'
+      );
+    }
+    return ownApp.messaging();
+  } catch (err) {
+    console.error('classPush: Firebase could not start:', err.message);
     return null;
   }
-  return admin.messaging();
 }
 
 // ── Per (class, user) throttle ────────────────────────────────────────────────
