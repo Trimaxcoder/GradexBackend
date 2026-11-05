@@ -3,9 +3,11 @@ const { body, validationResult } = require("express-validator");
 const rateLimit = require("express-rate-limit");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const { BrevoClient } = require("@getbrevo/brevo");   // ← replaces nodemailer
+const { BrevoClient } = require("@getbrevo/brevo"); // ← replaces nodemailer
 const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
+const FcmToken = require("../models/FcmToken");
+
 const {
   protect,
   generateAccessToken,
@@ -32,7 +34,14 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 // ── Helper ────────────────────────────────────────────────────────────────────
 const profileNeeded = (u) => {
   const p = u.profile || {};
-  return !(p.name && p.matricNumber && p.school && p.faculty && p.department && p.level);
+  return !(
+    p.name &&
+    p.matricNumber &&
+    p.school &&
+    p.faculty &&
+    p.department &&
+    p.level
+  );
 };
 
 const sendTokens = async (user, statusCode, res) => {
@@ -186,6 +195,7 @@ router.post("/refresh", async (req, res, next) => {
 router.post("/logout", protect, async (req, res, next) => {
   try {
     await User.findByIdAndUpdate(req.user._id, { refreshToken: null });
+    await FcmToken.deleteMany({ user: req.user._id });
     res.json({ success: true, message: "Logged out successfully." });
   } catch (err) {
     next(err);
@@ -213,13 +223,26 @@ router.get("/username", protect, async (req, res, next) => {
 // the full name again.
 const USERNAME_RE = /^[a-z0-9_.]{3,20}$/;
 const RESERVED_USERNAMES = [
-  "admin", "administrator", "moderator", "support", "system", "staff",
-  "schoollife", "gradex", "anonymous", "anon", "student", "everyone", "all",
+  "admin",
+  "administrator",
+  "moderator",
+  "support",
+  "system",
+  "staff",
+  "schoollife",
+  "gradex",
+  "anonymous",
+  "anon",
+  "student",
+  "everyone",
+  "all",
 ];
 
 router.post("/username", protect, async (req, res, next) => {
   try {
-    const raw = String(req.body.username || "").trim().toLowerCase();
+    const raw = String(req.body.username || "")
+      .trim()
+      .toLowerCase();
 
     // Empty = go back to showing the full name
     if (raw === "") {
@@ -240,7 +263,10 @@ router.post("/username", protect, async (req, res, next) => {
         .json({ success: false, message: "That username is not available." });
     }
 
-    const taken = await User.exists({ username: raw, _id: { $ne: req.user._id } });
+    const taken = await User.exists({
+      username: raw,
+      _id: { $ne: req.user._id },
+    });
     if (taken) {
       return res
         .status(409)
@@ -391,7 +417,9 @@ router.post("/google", authLimiter, async (req, res, next) => {
   try {
     const { idToken, accessToken } = req.body;
     if (!idToken && !accessToken) {
-      return res.status(400).json({ success: false, message: "Google token is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Google token is required." });
     }
 
     const allowed = [
@@ -402,11 +430,15 @@ router.post("/google", authLimiter, async (req, res, next) => {
     let email, name, googleId;
 
     if (idToken) {
-      const ticket = await googleClient.verifyIdToken({ idToken, audience: allowed });
+      const ticket = await googleClient.verifyIdToken({
+        idToken,
+        audience: allowed,
+      });
       ({ email, name, sub: googleId } = ticket.getPayload());
     } else {
       const info = await googleClient.getTokenInfo(accessToken);
-      if (!allowed.includes(info.aud)) throw new Error("Token audience mismatch");
+      if (!allowed.includes(info.aud))
+        throw new Error("Token audience mismatch");
 
       const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
         headers: { Authorization: `Bearer ${accessToken}` },

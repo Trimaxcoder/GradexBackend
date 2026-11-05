@@ -28,6 +28,9 @@ HOW TO INSTALL (5 minutes)
 5. git add .   then   git commit -m "Update"   then   git push
    Render redeploys by itself.
 
+ALSO, ONE SMALL EDIT IN YOUR OWN routes/auth.js (so a signed-out phone stops
+getting that user's notifications). See the chat message for the exact lines.
+
 NOTHING HAPPENS BY ITSELF AT FIRST
 - Auto-promotion stays OFF for every calendar until you switch it on.
 - The new-semester notice only goes out on a semester start date you
