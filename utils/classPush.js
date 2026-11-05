@@ -95,8 +95,14 @@ async function onlineInRoom(io, classId) {
   if (!io) return new Set();
   try {
     const sockets = await io.in(`class:${classId}`).fetchSockets();
+    // A phone that said "I'm away" (home pressed, app switched) does not
+    // count as looking at the chat, even though its connection is still open.
     return new Set(
-      sockets.map((s) => s.data && s.data.userId).filter(Boolean).map(String)
+      sockets
+        .filter((s) => s.data && !s.data.away && s.data.viewing === String(classId))
+        .map((s) => s.data && s.data.userId)
+        .filter(Boolean)
+        .map(String)
     );
   } catch (_) {
     return new Set();

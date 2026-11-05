@@ -94,8 +94,11 @@ function initSocket(httpServer) {
 
   const io = new Server(httpServer, {
     cors: { origin: process.env.CORS_ORIGIN || '*' },
-    pingInterval: 25000,
-    pingTimeout: 20000,
+    // A phone that goes to the background can vanish without saying goodbye.
+    // These values make the server notice within about 18 seconds (instead
+    // of 45), so it stops treating that phone as "inside the chat".
+    pingInterval: 10000,
+    pingTimeout: 8000,
     maxHttpBufferSize: 1e5, // 100 KB, plenty for text
   });
 
@@ -123,6 +126,25 @@ function initSocket(httpServer) {
     // Personal room: used for "you were approved / removed" style events
     socket.join(`user:${userId}`);
 
+    // The app says "away" the moment it leaves the screen. An away device is
+    // never counted as reading a chat: it gets the push, and its messages are
+    // not marked delivered or seen.
+    socket.data.away = false;
+
+    // Which chat screen is on screen right now (null = none). Set by the chat
+    // screen when it opens and cleared the moment it closes.
+    socket.data.viewing = null;
+    socket.on('chat:viewing', handle(async ({ classId }) => {
+      socket.data.viewing = isId(classId) ? String(classId) : null;
+    }));
+
+    // Reading a chat needs the chat to be on screen AND the app in front
+    const isReading = (s, classId) =>
+      !!s.data && !s.data.away && s.data.viewing === String(classId);
+    socket.on('presence', handle(async ({ away }) => {
+      socket.data.away = !!away;
+    }));
+
     // ── Join / leave a class room ─────────────────────────────────────────────
     socket.on('class:join', handle(async ({ classId }, reply) => {
       const m = await loadMembership(classId, userId);
@@ -133,6 +155,7 @@ function initSocket(httpServer) {
 
     socket.on('class:leave', handle(async ({ classId }, reply) => {
       socket.leave(`class:${classId}`);
+      if (socket.data.viewing === String(classId)) socket.data.viewing = null;
       reply({ ok: true });
     }));
 
@@ -150,7 +173,9 @@ function initSocket(httpServer) {
       (async () => {
         try {
           const live = await io.in(`class:${classId}`).fetchSockets();
-          const ids  = [...new Set(live.map((s) => s.data.userId))].filter((id) => id !== userId);
+          const ids  = [...new Set(
+            live.filter((s) => isReading(s, classId)).map((s) => s.data.userId)
+          )].filter((id) => id !== userId);
           await markDelivered(io, classId, ids, msg._id);
         } catch (err) {
           console.error('delivery receipts failed:', err.message);
@@ -307,6 +332,7 @@ function initSocket(httpServer) {
     socket.on('message:read', handle(async ({ classId, upToId }, reply) => {
       if (!isId(classId) || !isId(upToId)) return reply({ ok: false, error: 'INVALID' });
       if (!readLimiter(userId))            return reply({ ok: false, error: 'RATE_LIMITED' });
+      if (!isReading(socket, classId))     return reply({ ok: false, error: 'NOT_VIEWING' });
       if (!socket.rooms.has(`class:${classId}`)) return reply({ ok: false, error: 'NOT_IN_ROOM' });
 
       // Only real messages of this class count (stops made-up future ids)
