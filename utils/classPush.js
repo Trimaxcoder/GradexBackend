@@ -23,6 +23,15 @@ try {
   admin = null;
 }
 
+// Loading your Firebase setup file makes sure Firebase Admin is started even
+// if nothing else has sent a push yet (announcements start it the first time
+// they send, which is why they could work while chat did not).
+try {
+  require('../config/firebase');
+} catch (err) {
+  console.warn('classPush: could not load config/firebase:', err.message);
+}
+
 // 0 = no quiet gap: every message is pushed (a newer one replaces the old one)
 const PUSH_GAP_MS = 0;
 const BODY_MAX    = 110;
@@ -92,7 +101,10 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
   if (!userIds || userIds.length === 0) return;
 
   const messaging = getMessaging();
-  if (!messaging) return;
+  if (!messaging) {
+    console.warn('classPush: NOT sending, Firebase Admin is not initialized.');
+    return;
+  }
 
   const docs = await FcmToken
     .find({ user: { $in: userIds }, enabled: { $ne: false } })
@@ -100,6 +112,10 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
     .lean();
 
   const tokens = [...new Set(docs.map((d) => d.token).filter(Boolean))];
+  console.log(`classPush: "${title}" -> ${userIds.length} user(s), ${tokens.length} device token(s)`);
+  if (!tokens.length) {
+    console.warn('classPush: these users have NO saved device token, so nothing can be sent.');
+  }
 
   for (let i = 0; i < tokens.length; i += 500) {
     const chunk = tokens.slice(i, i + 500);
@@ -123,6 +139,11 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
     const result = typeof messaging.sendEachForMulticast === 'function'
       ? await messaging.sendEachForMulticast(message)
       : await messaging.sendMulticast(message);
+
+    console.log(`classPush: sent ${result.successCount}, failed ${result.failureCount}`);
+    result.responses.forEach((r) => {
+      if (!r.success && r.error) console.warn('classPush: FCM error:', r.error.code);
+    });
 
     // Forget tokens that Firebase says no longer exist (app uninstalled, etc.)
     const dead = [];
@@ -182,6 +203,7 @@ const notifyClassMessage = safe('notifyClassMessage', async (
   }
 
   const online    = await onlineInRoom(io, classId);
+  console.log(`classPush: message in class ${classId}, people with the chat open: ${online.size}`);
   const now       = Date.now();
   const tagged    = new Set((mentionIds || []).map(String));
   const targets   = [];
