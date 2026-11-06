@@ -22,6 +22,7 @@ const { displayName } = require('../utils/displayName');
 const { startRetentionJob } = require('../utils/retention');
 const { REACTIONS, groupReactions } = require('../utils/reactions');
 const { resolveMentions } = require('../utils/mentions');
+const { registerCallHandlers, startCallCleanup } = require('./calls');
 
 const isId = mongoose.isValidObjectId;
 
@@ -91,6 +92,8 @@ const handle = (fn) => async (data, cb) => {
 function initSocket(httpServer) {
   // Background clean-up of messages that every member has hidden
   startRetentionJob();
+  // Ends calls left hanging by a restart
+  startCallCleanup();
 
   const io = new Server(httpServer, {
     cors: { origin: process.env.CORS_ORIGIN || '*' },
@@ -144,6 +147,9 @@ function initSocket(httpServer) {
     socket.on('presence', handle(async ({ away }) => {
       socket.data.away = !!away;
     }));
+
+    // ── Voice and video calls (see socket/calls.js) ───────────────────────────
+    registerCallHandlers({ io, socket, handle });
 
     // ── Join / leave a class room ─────────────────────────────────────────────
     socket.on('class:join', handle(async ({ classId }, reply) => {

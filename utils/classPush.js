@@ -110,7 +110,7 @@ async function onlineInRoom(io, classId) {
 }
 
 /** Sends one notification to every device token the given users have saved. */
-async function sendToUsers(userIds, { title, body, data, tag }) {
+async function sendToUsers(userIds, { title, body, data, tag, channelId, ttlMs }) {
   if (!userIds || userIds.length === 0) return;
 
   const messaging = getMessaging();
@@ -139,8 +139,10 @@ async function sendToUsers(userIds, { title, body, data, tag }) {
       data: stringify(data),
       android: {
         priority: 'high',
+        // A ringing call is worthless after a short while
+        ...(ttlMs ? { ttl: ttlMs } : {}),
         notification: {
-          channelId: 'gradex_channel',   // created by the app, high importance
+          channelId: channelId || 'gradex_channel',   // created by the app, high importance
           icon:      'ic_notification',  // the white "SL" icon in the app
           color:     '#1565C0',
           ...(tag ? { tag } : {}),
@@ -308,6 +310,28 @@ const notifyJoinApproved = safe('notifyJoinApproved', async ({
   });
 });
 
+/** Someone is calling me and has no open app to ring. */
+const notifyIncomingCall = safe('notifyIncomingCall', async ({ userId, callerName, callId, kind, classId }) => {
+  await sendToUsers([String(userId)], {
+    title:     callerName || 'Someone',
+    body:      kind === 'video' ? 'Incoming video call' : 'Incoming voice call',
+    tag:       `call:${callId}`,
+    channelId: 'gradex_calls',
+    ttlMs:     45 * 1000,
+    data:      { type: 'call_incoming', callId: String(callId), classId: String(classId), kind },
+  });
+});
+
+/** The call ended before it was answered. Same tag, so it replaces the ringing one. */
+const notifyMissedCall = safe('notifyMissedCall', async ({ userId, callerName, callId, kind, classId }) => {
+  await sendToUsers([String(userId)], {
+    title: 'Missed call',
+    body:  `${callerName || 'Someone'} called you${kind === 'video' ? ' (video)' : ''}`,
+    tag:   `call:${callId}`,
+    data:  { type: 'class_message', classId: String(classId) },
+  });
+});
+
 /** Someone sent me a friend request. */
 const notifyFriendRequest = safe('notifyFriendRequest', async ({ userId, fromName, fromId }) => {
   await sendToUsers([String(userId)], {
@@ -329,6 +353,8 @@ const notifyFriendAccepted = safe('notifyFriendAccepted', async ({ userId, byNam
 });
 
 module.exports = {
+  notifyIncomingCall,
+  notifyMissedCall,
   notifyFriendRequest,
   notifyFriendAccepted,
   notifyClassMessage,
