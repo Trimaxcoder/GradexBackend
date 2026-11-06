@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@getbrevo/brevo": "^5.0.4",
+    "agora-token": "^2.0.7",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
