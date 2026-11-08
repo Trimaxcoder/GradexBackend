@@ -86,6 +86,7 @@ app.use('/api/reminders', reminderRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/app-version', appVersionRoutes);
 app.use('/api/classes', classRoutes);
+app.use('/api/invites', require('./routes/invites'));
 app.use('/api/friends', require('./routes/friends'));
 app.use('/api/calls', require('./routes/calls'));
 app.use('/api/academic', require('./routes/academic'));
