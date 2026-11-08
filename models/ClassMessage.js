@@ -17,6 +17,19 @@ const AttachmentSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// A voice or video call, saved in the chat when the call is over so both
+// people can see "Missed call", "Voice call 2:31" and so on. The message
+// belongs to the person who made the call.
+const CallLogSchema = new mongoose.Schema(
+  {
+    callId:      { type: ObjectId, ref: 'Call' },
+    kind:        { type: String, enum: ['voice', 'video'], default: 'voice' },
+    outcome:     { type: String, enum: ['ended', 'missed', 'declined', 'cancelled'], required: true },
+    durationSec: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 // One person's reaction to a message
 const ReactionSchema = new mongoose.Schema(
   {
@@ -32,6 +45,7 @@ const MessageSchema = new mongoose.Schema(
     sender:  { type: ObjectId, ref: 'User', required: true },
     text:    { type: String, trim: true, maxlength: 2000, default: '' },
     attachment: { type: AttachmentSchema, default: null },
+    call:    { type: CallLogSchema, default: null }, // set on call entries only
     replyTo: { type: ObjectId, ref: 'ClassMessage', default: null },
     reactions: { type: [ReactionSchema], default: [] },
     editedAt:  { type: Date, default: null }, // set when the text was edited
@@ -79,12 +93,18 @@ MessageSchema.methods.toClient = function () {
     ? { kind: a.kind, url: a.url, name: a.name, size: a.size, mime: a.mime, duration: a.duration }
     : null;
 
+  const c = this.call;
+  const call = c && c.outcome
+    ? { callId: c.callId ? String(c.callId) : '', kind: c.kind, outcome: c.outcome, durationSec: c.durationSec || 0 }
+    : null;
+
   return {
     id:        String(this._id),
     classId:   String(this.class),
     sender:    { id: idOf(this.sender), name: nameOf(this.sender) },
     text:      this.deleted ? '' : this.text,
     attachment,
+    call,
     deleted:   !!this.deleted,
     pinned:    !!this.pinned,
     reactions: this.deleted ? {} : groupReactions(this.reactions),

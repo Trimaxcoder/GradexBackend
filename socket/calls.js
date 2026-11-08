@@ -20,9 +20,11 @@
 
 const mongoose = require('mongoose');
 
-const Class      = require('../models/Class');
-const Friendship = require('../models/Friendship');
-const Call       = require('../models/Call');
+const Class        = require('../models/Class');
+const ClassMessage = require('../models/ClassMessage');
+const Friendship   = require('../models/Friendship');
+const Call         = require('../models/Call');
+const { displayName } = require('../utils/displayName');
 const agora      = require('../utils/agora');
 const { notifyIncomingCall, notifyMissedCall } = require('../utils/classPush');
 
@@ -131,6 +133,56 @@ function registerCallHandlers({ io, socket, handle }) {
 
   const toUser = (id, event, payload) => io.to(`user:${id}`).emit(event, payload);
 
+  /** Short text for the class list ("Missed voice call"). */
+  const callPreview = (call) => {
+    const label = call.kind === 'video' ? 'video call' : 'voice call';
+    switch (call.status) {
+      case 'missed':    return `Missed ${label}`;
+      case 'declined':  return `Declined ${label}`;
+      case 'cancelled': return `Cancelled ${label}`;
+      default:          return label.charAt(0).toUpperCase() + label.slice(1);
+    }
+  };
+
+  /** Saves "Missed call", "Voice call 2:31" ... in the private chat and shows
+   *  it live to both people. Never throws: a failed log must not break a call. */
+  const logCall = async (call) => {
+    try {
+      if (!['ended', 'missed', 'declined', 'cancelled'].includes(call.status)) return;
+
+      const msg = await ClassMessage.create({
+        class:  call.class,
+        sender: call.caller,
+        text:   '',
+        call: {
+          callId:      call._id,
+          kind:        call.kind,
+          outcome:     call.status,
+          durationSec: call.durationSec || 0,
+        },
+      });
+      await msg.populate(ClassMessage.POPULATE);
+
+      const classId = String(call.class);
+      io.to(`class:${classId}`).emit('message:new', { ...msg.toClient(), clientId: null });
+
+      // The class list shows it as the last message
+      io.to([`user:${call.caller}`, `user:${call.callee}`]).emit('class:activity', {
+        classId,
+        lastMessage: {
+          id:         String(msg._id),
+          text:       callPreview(call),
+          senderId:   String(call.caller),
+          senderName: displayName(msg.sender),
+          createdAt:  msg.createdAt,
+          deleted:    false,
+        },
+      });
+    } catch (err) {
+      console.error('call log failed:', err.message);
+    }
+  };
+
   /** Moves a call from one of the allowed statuses to a new one. Returns the
    *  updated call, or null if it was already over (so nothing happens twice). */
   const finish = async (callId, fromStatuses, status, extra = {}) => {
@@ -140,7 +192,10 @@ function registerCallHandlers({ io, socket, handle }) {
       { $set: { status, endedAt: now, ...extra } },
       { new: true }
     );
-    if (call) clearTimers(call._id);
+    if (call) {
+      clearTimers(call._id);
+      logCall(call); // not awaited: the call screen should close at once
+    }
     return call;
   };
 
