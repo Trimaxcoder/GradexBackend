@@ -196,7 +196,7 @@ const notifyClassMessage = safe('notifyClassMessage', async (
 ) => {
   const cls = await Class
     .findById(classId)
-    .select('name kind archived members.user members.status')
+    .select('name kind archived members.user members.status members.archivedAt')
     .lean();
   if (!cls || cls.archived) return;
 
@@ -205,6 +205,7 @@ const notifyClassMessage = safe('notifyClassMessage', async (
   if (cls.kind === 'dm') {
     const other = cls.members.find((m) => String(m.user) !== String(senderId));
     if (!other) return;
+    if (other.archivedAt) return; // they archived this chat: no alerts
     const uid = String(other.user);
     if ((await onlineInRoom(io, classId)).has(uid)) return;
 
@@ -226,6 +227,7 @@ const notifyClassMessage = safe('notifyClassMessage', async (
 
   for (const m of cls.members) {
     if (m.status !== 'active') continue;
+    if (m.archivedAt) continue; // archived chat: no alerts, not even for @mentions
     const uid = String(m.user);
     if (uid === String(senderId) || online.has(uid)) continue;
 
@@ -261,13 +263,13 @@ const notifyAnonOpened = safe('notifyAnonOpened', async (
 ) => {
   const cls = await Class
     .findById(classId)
-    .select('members.user members.status')
+    .select('members.user members.status members.archivedAt')
     .lean();
   if (!cls) return;
 
   const online  = await onlineInRoom(io, classId);
   const targets = cls.members
-    .filter((m) => m.status === 'active')
+    .filter((m) => m.status === 'active' && !m.archivedAt)
     .map((m) => String(m.user))
     .filter((uid) => uid !== String(byUserId) && !online.has(uid));
 

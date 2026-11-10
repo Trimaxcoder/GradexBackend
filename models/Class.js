@@ -29,6 +29,9 @@ const MemberSchema = new mongoose.Schema(
     // Private to this member. See utils/visibility.js.
     clearedAt:      { type: Date, default: null },
     disappearAfter: { type: Number, default: 0, enum: [0, 86400, 604800, 7776000] },
+    // Private to this member: when they archived this chat. Archived chats
+    // move out of the main list and send this member no alerts.
+    archivedAt:     { type: Date, default: null },
   },
   { _id: false }
 );

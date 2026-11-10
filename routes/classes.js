@@ -71,6 +71,8 @@ const classSummary = (cls, userId, peer) => {
     myStatus:        me ? me.status : null,
     isOwner:         String(cls.owner) === String(userId),
     createdAt:       cls.createdAt,
+    // My own archive (not the class-level `archived` above)
+    myArchived:      !!(me && me.archivedAt),
   };
   // Active members can share the code; pending members can't see it
   // (private chats have no code or link)
@@ -724,6 +726,29 @@ router.put('/:id/disappearing', loadClass, requireMember, wrap(async (req, res) 
   });
 
   res.json({ success: true, disappearAfter: seconds });
+}));
+
+// PUT /api/classes/:id/my-archive   body: { archived: true | false }
+// Archive or unarchive this chat for me only. While archived I get no push
+// alerts from it, and it moves to the Archived list.
+router.put('/:id/my-archive', loadClass, requireMember, wrap(async (req, res) => {
+  const { cls } = req;
+  const archived = req.body.archived === true;
+
+  await Class.updateOne(
+    { _id: cls._id, 'members.user': oid(req.user._id) },
+    { $set: { 'members.$.archivedAt': archived ? new Date() : null } }
+  );
+
+  // Other devices of mine refresh their list. The chat screen reads
+  // disappearAfter from this same event, so send it along unchanged.
+  emitToUser(req, req.user._id, 'class:preferences', {
+    classId:        String(cls._id),
+    disappearAfter: req.member.disappearAfter || 0,
+    myArchived:     archived,
+  });
+
+  res.json({ success: true, myArchived: archived });
 }));
 
 // GET /api/classes/:id/search?q=text&before=<messageId>&limit=30
