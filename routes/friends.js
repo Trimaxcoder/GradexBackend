@@ -4,6 +4,8 @@
 //
 //   GET    /api/friends                  my friends, requests I got / sent, people I blocked
 //   GET    /api/friends/search?q=        find students by name or username
+//   GET    /api/friends/suggestions?scope=app|school|department&q=&skip=
+//                                         "People you may know" (see below)
 //   GET    /api/friends/person/:id       one student's card (for the tap-a-name sheet)
 //   POST   /api/friends/request          { userId }  send a request (or accept theirs)
 //   PUT    /api/friends/request/:userId  { action: 'accept' | 'decline' }
@@ -56,6 +58,7 @@ const perUser = (max, windowMs, message) => rateLimit({
 });
 
 const searchLimiter  = perUser(40, 60 * 1000, 'Too many searches. Try again in a moment.');
+const suggestLimiter = perUser(60, 60 * 1000, 'Too many searches. Try again in a moment.');
 const requestLimiter = perUser(30, 60 * 60 * 1000, 'You have sent a lot of requests. Try again later.');
 
 const PEOPLE_FIELDS = 'profile.name profile.department profile.level username findable';
@@ -276,6 +279,115 @@ router.get('/search', searchLimiter, wrap(async (req, res) => {
   }
 
   res.json({ success: true, people });
+}));
+
+// ── People you may know ──────────────────────────────────────────────────────
+// GET /api/friends/suggestions?scope=app|school|department&q=text&skip=0
+//   app         everyone who can be found
+//   school      students at my school
+//   department  students in my department (and my level, and my school when set)
+// Never lists me, my friends, people I blocked, or people who blocked me.
+// People who turned off "let others find me" are left out. People with a
+// username are matched by it only, like the normal search. 20 per page.
+
+const SUGGEST_PAGE = 20;
+const escapeRe = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const exactRe  = (v) => new RegExp(`^\\s*${escapeRe(String(v).trim())}\\s*$`, 'i');
+
+router.get('/suggestions', suggestLimiter, wrap(async (req, res) => {
+  const me    = req.user._id;
+  const scope = ['app', 'school', 'department'].includes(req.query.scope)
+    ? req.query.scope
+    : 'app';
+  const skip = Math.max(0, Math.min(parseInt(req.query.skip, 10) || 0, 2000));
+
+  const q = String(req.query.q || '').trim().replace(/^@/, '');
+  if (q.length > 40) return fail(res, 400, 'That search is too long.');
+
+  const mine = await User.findById(me).select('profile.school profile.department profile.level');
+  const school = ((mine && mine.profile && mine.profile.school) || '').trim();
+  const dept   = ((mine && mine.profile && mine.profile.department) || '').trim();
+  const level  = ((mine && mine.profile && mine.profile.level) || '').trim();
+
+  // These tabs need something filled in on my own profile
+  if (scope === 'school' && !school) {
+    return res.json({ success: true, people: [], hasMore: false, needsProfile: 'school' });
+  }
+  if (scope === 'department' && !dept) {
+    return res.json({ success: true, people: [], hasMore: false, needsProfile: 'department' });
+  }
+
+  // Friends and blocked people (either direction) never show up
+  const hidden = await Friendship.find({
+    $or: [{ requester: me }, { recipient: me }],
+    status: { $in: ['accepted', 'blocked'] },
+  }).select('requester recipient');
+  const excluded = [me, ...hidden.map((r) => r.otherOf(me))];
+
+  const filter = { _id: { $nin: excluded }, findable: { $ne: false } };
+  if (scope === 'school') {
+    filter['profile.school'] = exactRe(school);
+  } else if (scope === 'department') {
+    filter['profile.department'] = exactRe(dept);
+    if (level)  filter['profile.level']  = exactRe(level);
+    if (school) filter['profile.school'] = exactRe(school);
+  }
+
+  if (q.length >= 2) {
+    const re = new RegExp(escapeRe(q), 'i');
+    const noUsername = [
+      { username: { $exists: false } },
+      { username: null },
+      { username: '' },
+    ];
+    filter.$or = [
+      { username: re },
+      { $and: [{ $or: noUsername }, { 'profile.name': re }] },
+    ];
+  }
+
+  const rows = await User.find(filter)
+    .select(`${PEOPLE_FIELDS} profile.school`)
+    .sort({ _id: -1 })
+    .skip(skip)
+    .limit(SUGGEST_PAGE + 1)
+    .maxTimeMS(5000);
+
+  const hasMore = rows.length > SUGGEST_PAGE;
+  const page    = rows.slice(0, SUGGEST_PAGE);
+
+  // Requests already sent or received, so the button says Requested / Accept
+  const pairs  = page.map((u) => pairOf(me, u._id));
+  const links  = await Friendship.find({ pair: { $in: pairs } });
+  const byPair = new Map(links.map((l) => [l.pair, l]));
+
+  // How many classes I have in common with each person
+  const myClasses = await Class.find({
+    kind: { $ne: 'dm' },
+    archived: false,
+    members: { $elemMatch: { user: me, status: 'active' } },
+  }).select('members.user members.status').lean();
+
+  const common = new Map();
+  for (const c of myClasses) {
+    for (const m of c.members) {
+      if (m.status !== 'active' || String(m.user) === String(me)) continue;
+      common.set(String(m.user), (common.get(String(m.user)) || 0) + 1);
+    }
+  }
+
+  const people = page.map((u) => {
+    const fs = byPair.get(pairOf(me, u._id));
+    return cardOf(u, relationOf(fs, me), {
+      school:        (u.profile && u.profile.school) || '',
+      mutualClasses: common.get(String(u._id)) || 0,
+    });
+  });
+
+  // Classmates first inside each page (stable for everyone else)
+  people.sort((a, b) => b.mutualClasses - a.mutualClasses);
+
+  res.json({ success: true, people, hasMore });
 }));
 
 router.get('/person/:id', wrap(async (req, res) => {

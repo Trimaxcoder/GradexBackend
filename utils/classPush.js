@@ -110,7 +110,7 @@ async function onlineInRoom(io, classId) {
 }
 
 /** Sends one notification to every device token the given users have saved. */
-async function sendToUsers(userIds, { title, body, data, tag, channelId, ttlMs }) {
+async function sendToUsers(userIds, { title, body, data, tag, channelId, ttlMs, dataOnly }) {
   if (!userIds || userIds.length === 0) return;
 
   const messaging = getMessaging();
@@ -133,23 +133,35 @@ async function sendToUsers(userIds, { title, body, data, tag, channelId, ttlMs }
   for (let i = 0; i < tokens.length; i += 500) {
     const chunk = tokens.slice(i, i + 500);
 
-    const message = {
-      tokens: chunk,
-      notification: { title, body },
-      data: stringify(data),
-      android: {
-        priority: 'high',
-        // A ringing call is worthless after a short while
-        ...(ttlMs ? { ttl: ttlMs } : {}),
-        notification: {
-          channelId: channelId || 'gradex_channel',   // created by the app, high importance
-          icon:      'ic_notification',  // the white "SL" icon in the app
-          color:     '#1565C0',
-          ...(tag ? { tag } : {}),
-        },
-      },
-    };
-    if (tag) message.apns = { payload: { aps: { 'thread-id': tag } } };
+    // dataOnly = no notification block: the app itself decides what to show.
+    // Used for ringing calls, where the app draws the full-screen call screen.
+    // With priority "high" Android wakes the app even when it is closed.
+    const message = dataOnly
+      ? {
+          tokens: chunk,
+          data: stringify(data),
+          android: {
+            priority: 'high',
+            ...(ttlMs ? { ttl: ttlMs } : {}),
+          },
+        }
+      : {
+          tokens: chunk,
+          notification: { title, body },
+          data: stringify(data),
+          android: {
+            priority: 'high',
+            // A ringing call is worthless after a short while
+            ...(ttlMs ? { ttl: ttlMs } : {}),
+            notification: {
+              channelId: channelId || 'gradex_channel',   // created by the app, high importance
+              icon:      'ic_notification',  // the white "SL" icon in the app
+              color:     '#1565C0',
+              ...(tag ? { tag } : {}),
+            },
+          },
+        };
+    if (tag && !dataOnly) message.apns = { payload: { aps: { 'thread-id': tag } } };
 
     const result = typeof messaging.sendEachForMulticast === 'function'
       ? await messaging.sendEachForMulticast(message)
@@ -312,15 +324,33 @@ const notifyJoinApproved = safe('notifyJoinApproved', async ({
   });
 });
 
-/** Someone is calling me and has no open app to ring. */
-const notifyIncomingCall = safe('notifyIncomingCall', async ({ userId, callerName, callId, kind, classId }) => {
+/** Someone is calling me and has no open app to ring.
+ *  Data only: the app wakes up and shows the full-screen incoming call with a
+ *  ringtone, even on the lock screen. */
+const notifyIncomingCall = safe('notifyIncomingCall', async ({ userId, callerName, callId, kind, classId, callerId }) => {
   await sendToUsers([String(userId)], {
-    title:     callerName || 'Someone',
-    body:      kind === 'video' ? 'Incoming video call' : 'Incoming voice call',
-    tag:       `call:${callId}`,
-    channelId: 'gradex_calls',
-    ttlMs:     45 * 1000,
-    data:      { type: 'call_incoming', callId: String(callId), classId: String(classId), kind },
+    title:    callerName || 'Someone',
+    dataOnly: true,
+    ttlMs:    45 * 1000,
+    data: {
+      type:       'call_incoming',
+      callId:     String(callId),
+      classId:    String(classId),
+      kind,
+      callerName: callerName || 'Someone',
+      callerId:   callerId ? String(callerId) : '',
+    },
+  });
+});
+
+/** The call stopped ringing (caller hung up, declined, nobody answered).
+ *  Tells the phone to stop its ringing screen. */
+const notifyCallStopped = safe('notifyCallStopped', async ({ userId, callId }) => {
+  await sendToUsers([String(userId)], {
+    title:    'Call ended',
+    dataOnly: true,
+    ttlMs:    30 * 1000,
+    data:     { type: 'call_stopped', callId: String(callId) },
   });
 });
 
@@ -356,6 +386,7 @@ const notifyFriendAccepted = safe('notifyFriendAccepted', async ({ userId, byNam
 
 module.exports = {
   notifyIncomingCall,
+  notifyCallStopped,
   notifyMissedCall,
   notifyFriendRequest,
   notifyFriendAccepted,

@@ -26,7 +26,7 @@ const Friendship   = require('../models/Friendship');
 const Call         = require('../models/Call');
 const { displayName } = require('../utils/displayName');
 const agora      = require('../utils/agora');
-const { notifyIncomingCall, notifyMissedCall } = require('../utils/classPush');
+const { notifyIncomingCall, notifyMissedCall, notifyCallStopped } = require('../utils/classPush');
 
 const isId = mongoose.isValidObjectId;
 
@@ -195,6 +195,11 @@ function registerCallHandlers({ io, socket, handle }) {
     if (call) {
       clearTimers(call._id);
       logCall(call); // not awaited: the call screen should close at once
+      // A call that was still ringing is over: stop the ringing screen on the
+      // callee's phone, even when the app is closed
+      if (fromStatuses.includes('ringing')) {
+        notifyCallStopped({ userId: call.callee, callId: call._id });
+      }
     }
     return call;
   };
@@ -306,6 +311,7 @@ function registerCallHandlers({ io, socket, handle }) {
       notifyIncomingCall({
         userId:     calleeId,
         callerName: myName,
+        callerId:   userId,
         callId:     call._id,
         kind,
         classId:    cls._id,
