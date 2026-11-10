@@ -10,6 +10,7 @@ const REACTIONS = [
   '\u{1F62E}',   // surprised
   '\u{1F622}',   // sad
   '\u{1F64F}',   // thanks
+  '\u{1F44E}',   // thumbs down (anonymous cards)
 ];
 
 // [{ user, emoji }, ...]  →  { "👍": ["userId", ...], "❤️": [...] }

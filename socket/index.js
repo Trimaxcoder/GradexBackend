@@ -69,7 +69,7 @@ async function loadMembership(classId, userId) {
 
   const cls = await Class.findOne(
     { _id: classId, 'members.user': uid },
-    { chatLocked: 1, archived: 1, members: { $elemMatch: { user: uid } } }
+    { name: 1, chatLocked: 1, archived: 1, members: { $elemMatch: { user: uid } } }
   );
 
   const member = cls && cls.members[0];
@@ -281,6 +281,8 @@ function initSocket(httpServer) {
 
       const src = await ClassMessage.findById(messageId);
       if (!src || src.deleted) return reply({ ok: false, error: 'NOT_FOUND' });
+      // Anonymous cards are shared with anon:share, which keeps them nameless
+      if (src.anon)            return reply({ ok: false, error: 'INVALID' });
 
       // I must be able to see the original myself
       const sm = await loadMembership(String(src.class), userId);
@@ -477,16 +479,55 @@ function initSocket(httpServer) {
       });
     }));
 
-    // ── Anonymous post ────────────────────────────────────────────────────────
-    // The broadcast and the saved document contain NO author information.
+    // ── Anonymous card in the class chat ──────────────────────────────────────
+    // Saved as a normal chat message with NO sender. The token is only used to
+    // rate-limit and to let an admin block abuse; it is never sent to any app.
+    const publishAnon = async (msg, classId) => {
+      await msg.populate(ClassMessage.POPULATE);
+      io.to(`class:${classId}`).emit('message:new', { ...msg.toClient(), clientId: null });
+
+      // Class list: last message + unread count (no push, no author)
+      (async () => {
+        try {
+          const cls = await Class.findById(classId).select('members.user members.status');
+          if (!cls) return;
+          const rooms = cls.members
+            .filter((x) => x.status === 'active')
+            .map((x) => `user:${x.user}`);
+          if (!rooms.length) return;
+          io.to(rooms).emit('class:activity', {
+            classId,
+            lastMessage: {
+              id:         String(msg._id),
+              text:       String(msg.text || '').replace(/\s+/g, ' ').slice(0, 120),
+              senderId:   '',
+              senderName: 'Anonymous',
+              createdAt:  msg.createdAt,
+              deleted:    false,
+            },
+          });
+        } catch (err) {
+          console.error('anon activity failed:', err.message);
+        }
+      })();
+    };
+
+    const recentAnon = (classId, token) => ClassMessage.countDocuments({
+      class:     classId,
+      anonToken: token,
+      createdAt: { $gte: new Date(Date.now() - 60 * 1000) },
+    });
+
     socket.on('anon:send', handle(async ({ classId, sessionId, text, replyTo }, reply) => {
       const clean = typeof text === 'string' ? text.trim() : '';
       if (!clean || clean.length > 1000) return reply({ ok: false, error: 'INVALID_TEXT' });
-      if (!isId(sessionId))              return reply({ ok: false, error: 'INVALID_SESSION' });
+      if (!isId(classId) || !isId(sessionId)) return reply({ ok: false, error: 'INVALID_SESSION' });
       if (!anonLimiter(userId))          return reply({ ok: false, error: 'RATE_LIMITED' });
 
       const m = await loadMembership(classId, userId);
-      if (!m) return reply({ ok: false, error: 'NOT_A_MEMBER' });
+      if (!m)                 return reply({ ok: false, error: 'NOT_A_MEMBER' });
+      if (m.cls.archived)     return reply({ ok: false, error: 'CLASS_ARCHIVED' });
+      if (m.member.muted)     return reply({ ok: false, error: 'MUTED' });
 
       const session = await AnonSession.findOne({
         _id:    sessionId,
@@ -496,50 +537,33 @@ function initSocket(httpServer) {
       if (!session) return reply({ ok: false, error: 'SESSION_CLOSED' });
 
       const token = anonToken(sessionId, userId);
-      if (session.blockedTokens.includes(token)) {
-        return reply({ ok: false, error: 'BLOCKED' });
-      }
+      if (session.blockedTokens.includes(token)) return reply({ ok: false, error: 'BLOCKED' });
+      if ((await recentAnon(classId, token)) >= 5) return reply({ ok: false, error: 'RATE_LIMITED' });
 
-      // Per-token limit: 5 posts a minute inside one session
-      const recent = await AnonPost.countDocuments({
-        session:   sessionId,
-        tokenHash: token,
-        createdAt: { $gte: new Date(Date.now() - 60 * 1000) },
-      });
-      if (recent >= 5) return reply({ ok: false, error: 'RATE_LIMITED' });
-
-      // A reply points at another post of the SAME session. The start of the
-      // original text is kept so the reply can show what it answers.
       let replyId = null;
-      let replyText = '';
       if (replyTo && isId(replyTo)) {
-        const parent = await AnonPost.findOne({
-          _id: replyTo, session: sessionId, hidden: false,
-        }).select('text');
-        if (parent) {
-          replyId   = parent._id;
-          replyText = String(parent.text || '').replace(/\s+/g, ' ').slice(0, 140);
-        }
+        const parent = await ClassMessage.exists({ _id: replyTo, class: classId });
+        if (parent) replyId = replyTo;
       }
 
-      const post = await AnonPost.create({
-        session:   sessionId,
-        class:     classId,
-        text:      clean,
-        tokenHash: token,
-        replyTo:   replyId,
-        replyText,
+      const msg = await ClassMessage.create({
+        class:       classId,
+        sender:      null,
+        anon:        true,
+        anonSession: sessionId,
+        anonToken:   token,
+        text:        clean,
+        replyTo:     replyId,
       });
       await AnonSession.updateOne({ _id: sessionId }, { $inc: { postCount: 1 } });
 
-      io.to(`class:${classId}`).emit('anon:new', post.toClient());
+      await publishAnon(msg, classId);
       reply({ ok: true });
     }));
 
-    // ── Share an anonymous post into other classes ───────────────────────────
-    // The copy lands in the OPEN anonymous session of each target class, with
-    // no author, exactly like a post typed there. It only says which class it
-    // came from.
+    // ── Share an anonymous card into other classes ───────────────────────────
+    // Works whether or not an anonymous session is open there. The copy has no
+    // author either; it only says which class it came from.
     socket.on('anon:share', handle(async ({ classId, postId, classIds }, reply) => {
       if (!isId(classId) || !isId(postId) || !Array.isArray(classIds)) {
         return reply({ ok: false, error: 'INVALID' });
@@ -547,20 +571,18 @@ function initSocket(httpServer) {
       const targets = [...new Set(classIds.map(String))]
         .filter((id) => isId(id) && id !== String(classId))
         .slice(0, 5);
-      if (!targets.length)              return reply({ ok: false, error: 'INVALID' });
-      if (!anonShareLimiter(userId))    return reply({ ok: false, error: 'RATE_LIMITED' });
+      if (!targets.length)           return reply({ ok: false, error: 'INVALID' });
+      if (!anonShareLimiter(userId)) return reply({ ok: false, error: 'RATE_LIMITED' });
 
-      // I must be an active member of the class the post is in
       const src = await loadMembership(classId, userId);
       if (!src) return reply({ ok: false, error: 'NOT_A_MEMBER' });
 
-      const original = await AnonPost.findOne({
-        _id: postId, class: classId, hidden: false,
+      const original = await ClassMessage.findOne({
+        _id: postId, class: classId, anon: true, deleted: false,
       }).select('text');
       if (!original) return reply({ ok: false, error: 'NOT_FOUND' });
 
-      const srcClass = await Class.findById(classId).select('name');
-      const sharedFrom = srcClass ? srcClass.name : '';
+      const sharedFrom = src.cls && src.cls.name ? src.cls.name : '';
 
       const results = [];
       for (const targetId of targets) {
@@ -568,33 +590,37 @@ function initSocket(httpServer) {
         if (!tm)             { results.push({ classId: targetId, ok: false, error: 'NOT_A_MEMBER' });    continue; }
         if (tm.cls.archived) { results.push({ classId: targetId, ok: false, error: 'CLASS_ARCHIVED' }); continue; }
         if (tm.member.muted) { results.push({ classId: targetId, ok: false, error: 'MUTED' });          continue; }
+        if (tm.cls.chatLocked && tm.member.role !== 'admin') {
+          results.push({ classId: targetId, ok: false, error: 'CHAT_LOCKED' });
+          continue;
+        }
 
-        const session = await AnonSession.findOne({
-          class: targetId, status: 'open',
-        }).select('+blockedTokens');
-        if (!session) { results.push({ classId: targetId, ok: false, error: 'SESSION_CLOSED' }); continue; }
-
-        const token = anonToken(String(session._id), userId);
-        if (session.blockedTokens.includes(token)) {
+        // Open session there: use its token so blocking works. Otherwise a
+        // plain per-class token still limits spam.
+        const session = await AnonSession.findOne({ class: targetId, status: 'open' })
+          .select('+blockedTokens');
+        const token = anonToken(session ? String(session._id) : `share-${targetId}`, userId);
+        if (session && session.blockedTokens.includes(token)) {
           results.push({ classId: targetId, ok: false, error: 'BLOCKED' });
           continue;
         }
-        const recent = await AnonPost.countDocuments({
-          session:   session._id,
-          tokenHash: token,
-          createdAt: { $gte: new Date(Date.now() - 60 * 1000) },
-        });
-        if (recent >= 5) { results.push({ classId: targetId, ok: false, error: 'RATE_LIMITED' }); continue; }
+        if ((await recentAnon(targetId, token)) >= 5) {
+          results.push({ classId: targetId, ok: false, error: 'RATE_LIMITED' });
+          continue;
+        }
 
-        const post = await AnonPost.create({
-          session:    session._id,
-          class:      targetId,
-          text:       original.text,
-          tokenHash:  token,
+        const msg = await ClassMessage.create({
+          class:       targetId,
+          sender:      null,
+          anon:        true,
+          anonSession: session ? session._id : null,
+          anonToken:   token,
+          text:        original.text,
           sharedFrom,
         });
-        await AnonSession.updateOne({ _id: session._id }, { $inc: { postCount: 1 } });
-        io.to(`class:${targetId}`).emit('anon:new', post.toClient());
+        if (session) await AnonSession.updateOne({ _id: session._id }, { $inc: { postCount: 1 } });
+
+        await publishAnon(msg, targetId);
         results.push({ classId: targetId, ok: true });
       }
 

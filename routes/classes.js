@@ -209,8 +209,8 @@ const lastMessageOf = async (classId, hideBefore) => {
   return {
     id:         String(m._id),
     text:       previewOf(m),
-    senderId:   String(m.sender && m.sender._id ? m.sender._id : m.sender),
-    senderName: displayName(m.sender),
+    senderId:   m.anon || !m.sender ? '' : String(m.sender._id ? m.sender._id : m.sender),
+    senderName: m.anon || !m.sender ? 'Anonymous' : displayName(m.sender),
     createdAt:  m.createdAt,
     deleted:    !!m.deleted,
   };
@@ -930,30 +930,33 @@ router.get('/:id/anon/:sid/posts', loadClass, requireMember, wrap(async (req, re
 }));
 
 // DELETE /api/classes/:id/anon/:sid/posts/:pid?block=true
-// Hides a post. With block=true the sender is also blocked for the rest of this
+// :pid is now the id of an anonymous card in the class chat. It is removed for
+// everyone. With block=true the sender is also blocked for the rest of this
 // session, without the admin ever learning who they are.
 router.delete('/:id/anon/:sid/posts/:pid', loadClass, requireAdmin, wrap(async (req, res) => {
-  const { sid, pid } = req.params;
-  if (!isId(sid) || !isId(pid)) return fail(res, 400, 'Invalid id.');
+  const { pid } = req.params;
+  if (!isId(pid)) return fail(res, 400, 'Invalid id.');
 
-  const post = await AnonPost.findOne({ _id: pid, session: sid, class: req.cls._id })
-    .select('+tokenHash');
-  if (!post) return fail(res, 404, 'Post not found.');
+  const msg = await ClassMessage.findOne({ _id: pid, class: req.cls._id, anon: true })
+    .select('+anonToken');
+  if (!msg || msg.deleted) return fail(res, 404, 'Post not found.');
 
-  post.hidden = true;
-  await post.save();
+  const token = msg.anonToken;
+  const sessionId = msg.anonSession;
 
-  // Replies that quoted this post must stop showing its text
-  await AnonPost.updateMany({ replyTo: post._id }, { $set: { replyText: '' } });
+  msg.deleted    = true;
+  msg.text       = '';
+  msg.pinned     = false;
+  msg.reactions  = [];
+  await msg.save();
 
-  if (req.query.block === 'true') {
-    await AnonSession.updateOne({ _id: sid }, { $addToSet: { blockedTokens: post.tokenHash } });
+  if (req.query.block === 'true' && token && sessionId) {
+    await AnonSession.updateOne({ _id: sessionId }, { $addToSet: { blockedTokens: token } });
   }
 
-  emitToClass(req, req.cls._id, 'anon:hidden', {
-    id:        String(post._id),
-    sessionId: String(sid),
-    classId:   String(req.cls._id),
+  emitToClass(req, req.cls._id, 'message:deleted', {
+    id:      String(msg._id),
+    classId: String(req.cls._id),
   });
   res.json({ success: true });
 }));

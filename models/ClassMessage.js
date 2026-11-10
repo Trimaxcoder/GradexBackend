@@ -42,7 +42,14 @@ const ReactionSchema = new mongoose.Schema(
 const MessageSchema = new mongoose.Schema(
   {
     class:   { type: ObjectId, ref: 'Class', required: true },
-    sender:  { type: ObjectId, ref: 'User', required: true },
+    sender:  { type: ObjectId, ref: 'User', default: null }, // null on anonymous cards
+    // Anonymous card (written during an anonymous session, or shared from one).
+    // There is NO author field: `sender` stays null. The token only lets the
+    // server rate-limit and block, and it is never sent to any app.
+    anon:        { type: Boolean, default: false },
+    anonSession: { type: ObjectId, ref: 'AnonSession', default: null },
+    anonToken:   { type: String, default: '', select: false },
+    sharedFrom:  { type: String, default: '', maxlength: 120 }, // class the card was shared from
     text:    { type: String, trim: true, maxlength: 2000, default: '' },
     attachment: { type: AttachmentSchema, default: null },
     call:    { type: CallLogSchema, default: null }, // set on call entries only
@@ -61,6 +68,8 @@ const MessageSchema = new mongoose.Schema(
 
 MessageSchema.index({ class: 1, _id: -1 });
 MessageSchema.index({ class: 1, pinned: 1 });
+// Rate limit for anonymous cards (per token, per class)
+MessageSchema.index({ class: 1, anonToken: 1, createdAt: -1 }, { sparse: true });
 
 // What a reply preview shows when the original has no text
 const labelFor = (m) => {
@@ -84,7 +93,7 @@ MessageSchema.methods.toClient = function () {
       id:         String(this.replyTo._id),
       text:       this.replyTo.deleted ? '' : labelFor(this.replyTo),
       deleted:    !!this.replyTo.deleted,
-      senderName: nameOf(this.replyTo.sender),
+      senderName: this.replyTo.anon || !this.replyTo.sender ? 'Anonymous' : nameOf(this.replyTo.sender),
     };
   }
 
@@ -101,7 +110,11 @@ MessageSchema.methods.toClient = function () {
   return {
     id:        String(this._id),
     classId:   String(this.class),
-    sender:    { id: idOf(this.sender), name: nameOf(this.sender) },
+    sender:    this.anon || !this.sender
+      ? { id: '', name: 'Anonymous' }
+      : { id: idOf(this.sender), name: nameOf(this.sender) },
+    anon:      !!this.anon,
+    sharedFrom: this.anon ? (this.sharedFrom || '') : '',
     text:      this.deleted ? '' : this.text,
     attachment,
     call,
@@ -122,7 +135,7 @@ ClassMessage.POPULATE = [
   { path: 'sender', select: 'profile.name username' },
   {
     path:     'replyTo',
-    select:   'text deleted sender attachment',
+    select:   'text deleted sender attachment anon',
     populate: { path: 'sender', select: 'profile.name username' },
   },
 ];

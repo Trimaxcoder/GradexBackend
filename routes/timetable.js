@@ -12,6 +12,7 @@ const {
   describeTerm,
   listTerms,
 } = require("../utils/academicTerm");
+const { carryoverTokens, carryoverEntriesFor } = require("../utils/carryover");
 const {
   adoptLegacyEntries,
   entryInScope,
@@ -187,7 +188,13 @@ function buildExamFields(body, partial = false) {
 }
 
 async function pushToClass(entry, title, body, data) {
-  const tokens = await classTokens(entry);
+  // the class itself, plus students carrying this course from a higher level
+  const tokens = [
+    ...new Set([
+      ...(await classTokens(entry)),
+      ...(await carryoverTokens(entry)),
+    ]),
+  ];
   if (tokens.length > 0) {
     await sendToTokens(tokens, title, body, data);
   }
@@ -238,8 +245,12 @@ router.get("/lecture", auth, async (req, res, next) => {
       preparing = true;
     }
 
+    // classes of the courses this student carries over from lower levels
+    const carryover = await carryoverEntriesFor(req.user._id, state);
+
     res.json({
       entries,
+      carryover,
       term: describeTerm(state),
       setupNeeded: state.status === "active" && entries.length === 0,
       preparing,

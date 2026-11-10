@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const User     = require('../models/User');
 const Course   = require('../models/Course');
 const FcmToken = require('../models/FcmToken');
+const Carryover = require('../models/Carryover');
 const { protect } = require('../middleware/auth');
 const { norm, levelNum } = require('../utils/repRequest');
 
@@ -102,11 +103,31 @@ router.put(
         }
       }
 
+      // Worked out BEFORE saving, from the profile as it was
+      const deptMoved = ['school', 'faculty', 'department'].some(
+        (f) => updates[`profile.${f}`] !== undefined && norm(updates[`profile.${f}`]) !== norm(current[f])
+      );
+
       const user = await User.findByIdAndUpdate(
         req.user._id,
         { $set: updates },
         { new: true, runValidators: true }
       );
+
+      // Carry-over courses belong to a department and sit below the student's
+      // level: moving department clears them; lowering the level drops any that
+      // are no longer below it.
+      if (deptMoved) {
+        await Carryover.deleteMany({ user: user._id });
+      } else if (levelChanged) {
+        const n = levelNum(updates['profile.level']);
+        if (n !== null) {
+          const notBelow = ['100', '200', '300', '400', '500', '600', '700'].filter(
+            (l) => levelNum(l) >= n
+          );
+          await Carryover.deleteMany({ user: user._id, level: { $in: notBelow } });
+        }
+      }
 
       // Keep the notification scope in step with the profile, so class
       // pushes follow a changed school / department / level straight away.
@@ -171,6 +192,7 @@ router.delete('/', async (req, res, next) => {
   try {
     await Course.deleteMany({ userId: req.user._id });
     await FcmToken.deleteMany({ user: req.user._id });
+    await Carryover.deleteMany({ user: req.user._id });
     await User.findByIdAndDelete(req.user._id);
     res.json({ success: true, message: 'Account and all data permanently deleted.' });
   } catch (err) {

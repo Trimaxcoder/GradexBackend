@@ -6,6 +6,7 @@ const { getTermState, isClassTimeActive } = require('../utils/academicTerm');
 const { adoptLegacyEntries } = require('../utils/timetableTerm');
 const { runDuePromotions } = require('./promotion');
 const { runSemesterStartNotices } = require('./semesterStart');
+const { sendCarryoverDigests } = require('./carryoverDigest');
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -100,6 +101,13 @@ async function sendMorningDigests() {
   console.log(
     `Morning digest done for ${today}: ${sent} classes notified, ${onBreak} skipped (semester break)`,
   );
+
+  // Carry-over courses: today's classes for courses students carry from lower levels.
+  try {
+    await sendCarryoverDigests(today);
+  } catch (err) {
+    console.error('Carry-over digest failed:', err);
+  }
 
   // Once a day: move students up for any session that has just ended and has
   // auto-promote switched on. Runs after the digest so it can never delay it.
