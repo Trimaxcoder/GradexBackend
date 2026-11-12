@@ -91,6 +91,7 @@ app.use('/api/friends', require('./routes/friends'));
 app.use('/api/calls', require('./routes/calls'));
 app.use('/api/academic', require('./routes/academic'));
 app.use('/api/carryover', require('./routes/carryover'));
+app.use('/api/forms', require('./routes/forms'));
 
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);
