@@ -13,8 +13,8 @@ const { displayName }  = require('../utils/displayName');
 
 const router = express.Router();
 
-const MAX_FORMS_PER_CLASS = 100;
-const MAX_RESPONSES       = 3000;
+const MAX_FORMS_PER_USER = 200;
+const MAX_RESPONSES      = 3000;
 
 const isId = mongoose.isValidObjectId;
 
@@ -26,12 +26,10 @@ const fail = (res, status, message) =>
   res.status(status).json({ success: false, message });
 
 // Set FORM_LINK_BASE in .env to change the public link.
-// The Flutter web app must open /f/<publicId> as the fill screen.
 const formLink = (publicId) =>
   `${process.env.FORM_LINK_BASE || 'https://schoolife.web.app/f'}/${publicId}`;
 
 // Like `protect`, but never rejects. If a valid token is sent, req.user is set.
-// Used on public routes so logged-in students get autofill and one response each.
 const optionalAuth = async (req, _res, next) => {
   try {
     const h = req.headers.authorization;
@@ -72,8 +70,36 @@ const uploadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Open / closed ─────────────────────────────────────────────────────────────
+// A form accepts responses only while it is "open" and its deadline (if any)
+// has not passed.
+const isOpen = (form) =>
+  form.status === 'open' && (!form.closesAt || form.closesAt.getTime() > Date.now());
+
+// 'open' | 'collected' | 'expired' (deadline passed)
+const effectiveStatus = (form) =>
+  form.status === 'collected' ? 'collected' : isOpen(form) ? 'open' : 'expired';
+
+const closedMessage = (form) =>
+  effectiveStatus(form) === 'expired'
+    ? 'The deadline for this form has passed.'
+    : 'This form is closed. It is no longer collecting responses.';
+
+// Returns { value } or { error }. `current` is the saved deadline (a Date or null).
+const parseDeadline = (raw, current) => {
+  if (raw === null || raw === '') return { value: null };
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return { error: 'Choose a valid deadline.' };
+  // unchanged deadline is always fine, even if it has passed
+  if (current && current.getTime() === d.getTime()) return { value: d };
+  if (d.getTime() <= Date.now()) return { error: 'The deadline must be in the future.' };
+  return { value: d };
+};
+
 // ── Validation ────────────────────────────────────────────────────────────────
 const CHOICE_TYPES = ['dropdown', 'radio', 'checkbox'];
+// Answer types that can be used to stop duplicates
+const UNIQUE_TYPES = ['text', 'number', 'email', 'phone'];
 
 // Only images uploaded to your own Cloudinary are accepted as a logo
 const cleanLogo = (v) => {
@@ -122,6 +148,55 @@ const sanitizeFields = (raw) => {
     fields.push({ id: `f${i + 1}`, label, type, required: !!f.required, options, profileKey });
   }
   return { fields };
+};
+
+// Cleans the table settings sent by the owner. Anything unknown falls back to a default.
+const CASES = ['none', 'upper', 'lower', 'sentence', 'title', 'camel'];
+
+const pick = (v, allowed, fallback) => (allowed.includes(v) ? v : fallback);
+
+const cleanList = (v, max, len) =>
+  [...new Set((Array.isArray(v) ? v : []).map((x) => String(x).trim()).filter(Boolean))]
+    .slice(0, max)
+    .map((x) => x.slice(0, len));
+
+const sanitizeSettings = (raw, form) => {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const ids = new Set(form.fields.map((f) => f.id));
+
+  return {
+    numbered: r.numbered !== false,
+    numberLabel: String(r.numberLabel ?? 'S/N').trim().slice(0, 12) || 'S/N',
+    showSubmitter: r.showSubmitter === true,
+    align: pick(r.align, ['left', 'center', 'right'], 'left'),
+    headerCase: pick(r.headerCase, CASES, 'none'),
+    cellCase: pick(r.cellCase, CASES, 'none'),
+    fontSize: pick(r.fontSize, ['small', 'normal', 'large'], 'normal'),
+    orientation: pick(r.orientation, ['portrait', 'landscape'], 'landscape'),
+    blankRows: Math.min(Math.max(parseInt(r.blankRows) || 0, 0), 100),
+    blankColumns: cleanList(r.blankColumns, 5, 30),
+    hiddenFieldIds: (Array.isArray(r.hiddenFieldIds) ? r.hiddenFieldIds : [])
+      .map(String)
+      .filter((id) => ids.has(id)),
+    firstFieldId: ids.has(String(r.firstFieldId)) ? String(r.firstFieldId) : '',
+    sortFieldId: ids.has(String(r.sortFieldId)) ? String(r.sortFieldId) : '',
+    sortDir: pick(r.sortDir, ['asc', 'desc'], 'asc'),
+    signatories: cleanList(r.signatories, 4, 40),
+  };
+};
+
+// Which question must be unique. Uses the position in `fields` when the fields
+// were just sent (their ids can change), or the id when only settings changed.
+const resolveUniqueId = (form, body) => {
+  let id = '';
+  if (body.uniqueFieldIndex !== undefined) {
+    const i = parseInt(body.uniqueFieldIndex);
+    if (Number.isInteger(i) && i >= 0 && i < form.fields.length) id = form.fields[i].id;
+  } else {
+    id = String(body.uniqueFieldId || '');
+  }
+  const f = form.fields.find((x) => x.id === id);
+  return f && UNIQUE_TYPES.includes(f.type) ? id : '';
 };
 
 // Checks a person's answers against the form. Returns { answers } or { error }.
@@ -197,6 +272,32 @@ const cleanAnswers = (form, raw) => {
   return { answers: out };
 };
 
+// If the form stops duplicates, returns an error message when another response
+// already has the same value (ignores spaces and upper/lower case). Else null.
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const duplicateMessage = async (form, answers, selfId) => {
+  if (!form.uniqueFieldId) return null;
+  const a = answers.find((x) => x.fieldId === form.uniqueFieldId);
+  if (!a || a.value === '' || a.value === null || a.value === undefined) return null;
+
+  const match = typeof a.value === 'string'
+    ? new RegExp(`^\\s*${escapeRe(a.value.trim())}\\s*$`, 'i')
+    : a.value;
+
+  const filter = {
+    form: form._id,
+    answers: { $elemMatch: { fieldId: form.uniqueFieldId, value: match } },
+  };
+  if (selfId) filter._id = { $ne: selfId };
+
+  const taken = await FormSubmission.exists(filter);
+  if (!taken) return null;
+
+  const f = form.fields.find((x) => x.id === form.uniqueFieldId);
+  return `A response with this ${f ? f.label : 'value'} has already been submitted.`;
+};
+
 // ── Output shapes ─────────────────────────────────────────────────────────────
 const fieldOut = (f) => ({
   id: f.id,
@@ -207,29 +308,37 @@ const fieldOut = (f) => ({
   profileKey: f.profileKey,
 });
 
-// What the public (fill) screen needs. Nothing about the owner or class.
+// What the public (fill) screen needs. Nothing about the owner.
 const publicForm = (form) => ({
   publicId:    form.publicId,
   title:       form.title,
   description: form.description,
   logoUrl:     form.logoUrl,
-  status:      form.status,
+  status:      isOpen(form) ? 'open' : 'collected',
+  expired:     effectiveStatus(form) === 'expired',
+  closesAt:    form.closesAt,
   fields:      form.fields.map(fieldOut),
 });
 
 const formOut = (form, extra = {}) => ({
-  id:          String(form._id),
-  classId:     form.classId ? String(form.classId) : null,
-  publicId:    form.publicId,
-  link:        formLink(form.publicId),
-  title:       form.title,
-  description: form.description,
-  logoUrl:     form.logoUrl,
-  status:      form.status,
-  collectedAt: form.collectedAt,
-  fields:      form.fields.map(fieldOut),
-  createdAt:   form.createdAt,
-  updatedAt:   form.updatedAt,
+  id:              String(form._id),
+  classId:         form.classId ? String(form.classId) : null,
+  publicId:        form.publicId,
+  link:            formLink(form.publicId),
+  title:           form.title,
+  description:     form.description,
+  logoUrl:         form.logoUrl,
+  status:          form.status,
+  effectiveStatus: effectiveStatus(form),
+  collectedAt:     form.collectedAt,
+  closesAt:        form.closesAt,
+  uniqueFieldId:   form.uniqueFieldId || '',
+  tableSettings:   form.tableSettings && form.tableSettings.toObject
+    ? form.tableSettings.toObject()
+    : {},
+  fields:          form.fields.map(fieldOut),
+  createdAt:       form.createdAt,
+  updatedAt:       form.updatedAt,
   ...extra,
 });
 
@@ -257,22 +366,32 @@ const prefillFor = (form, user) => {
   return out;
 };
 
-// ── Admin helpers ─────────────────────────────────────────────────────────────
-const CLOSED_MSG = 'This form is closed. It is no longer collecting responses.';
+// ── Owner helpers ─────────────────────────────────────────────────────────────
 
-// Loads :id and checks the caller is an admin of the form's class.
+// Loads :id and checks the caller created the form.
 // Sends the error response itself and returns null when not allowed.
-const getManagedForm = async (req, res) => {
+const getOwnedForm = async (req, res) => {
   if (!isId(req.params.id)) { fail(res, 400, 'Invalid form id.'); return null; }
   const form = await Form.findById(req.params.id);
   if (!form) { fail(res, 404, 'Form not found.'); return null; }
-
-  const cls = form.classId ? await Class.findById(form.classId) : null;
-  const allowed = cls
-    ? cls.isAdmin(req.user._id)
-    : String(form.owner) === String(req.user._id);
-  if (!allowed) { fail(res, 403, 'Only a class admin can do this.'); return null; }
+  if (String(form.owner) !== String(req.user._id)) {
+    fail(res, 403, 'Only the person who created this form can do this.');
+    return null;
+  }
   return form;
+};
+
+// A form can be shared with a class the creator belongs to (optional).
+// Returns { id } (id may be null) or { status, error }.
+const resolveClass = async (classId, userId) => {
+  if (!classId) return { id: null };
+  if (!isId(classId)) return { status: 400, error: 'Invalid class.' };
+  const cls = await Class.findById(classId);
+  if (!cls || cls.kind === 'dm' || cls.archived) return { status: 404, error: 'Class not found.' };
+  if (!cls.isActiveMember(userId)) {
+    return { status: 403, error: 'You can only share a form with a class you belong to.' };
+  }
+  return { id: cls._id };
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -302,7 +421,7 @@ router.get('/public/:publicId', publicReadLimiter, optionalAuth, wrap(async (req
 router.post('/public/:publicId/submit', publicWriteLimiter, optionalAuth, wrap(async (req, res) => {
   const form = await Form.findOne({ publicId: String(req.params.publicId || '').slice(0, 20) });
   if (!form) return fail(res, 404, 'Form not found.');
-  if (form.status !== 'open') return fail(res, 403, CLOSED_MSG);
+  if (!isOpen(form)) return fail(res, 403, closedMessage(form));
 
   const { answers, error } = cleanAnswers(form, req.body.answers);
   if (error) return fail(res, 400, error);
@@ -310,6 +429,8 @@ router.post('/public/:publicId/submit', publicWriteLimiter, optionalAuth, wrap(a
   if (req.user) {
     const existing = await FormSubmission.findOne({ form: form._id, user: req.user._id });
     if (existing) {
+      const dup = await duplicateMessage(form, answers, existing._id);
+      if (dup) return fail(res, 409, dup);
       existing.answers = answers;
       await existing.save();
       return res.json({ success: true, submission: subOut(existing) });
@@ -318,6 +439,9 @@ router.post('/public/:publicId/submit', publicWriteLimiter, optionalAuth, wrap(a
 
   const total = await FormSubmission.countDocuments({ form: form._id });
   if (total >= MAX_RESPONSES) return fail(res, 400, 'This form has reached its response limit.');
+
+  const dup = await duplicateMessage(form, answers, null);
+  if (dup) return fail(res, 409, dup);
 
   if (req.user) {
     try {
@@ -347,7 +471,6 @@ const findByToken = async (formId, token) => {
 };
 
 // POST /api/forms/public/:publicId/my-submission   body: { editToken }
-// A guest opens their edit link: returns their answers so they can change them.
 router.post('/public/:publicId/my-submission', publicReadLimiter, wrap(async (req, res) => {
   const form = await Form.findOne({ publicId: String(req.params.publicId || '').slice(0, 20) });
   if (!form) return fail(res, 404, 'Form not found.');
@@ -358,11 +481,10 @@ router.post('/public/:publicId/my-submission', publicReadLimiter, wrap(async (re
 }));
 
 // PUT /api/forms/public/:publicId/submission   body: { editToken, answers }
-// A guest edits their response, only while the form is open.
 router.put('/public/:publicId/submission', publicWriteLimiter, wrap(async (req, res) => {
   const form = await Form.findOne({ publicId: String(req.params.publicId || '').slice(0, 20) });
   if (!form) return fail(res, 404, 'Form not found.');
-  if (form.status !== 'open') return fail(res, 403, CLOSED_MSG);
+  if (!isOpen(form)) return fail(res, 403, closedMessage(form));
 
   const sub = await findByToken(form._id, req.body.editToken);
   if (!sub) return fail(res, 404, 'We could not find your response.');
@@ -370,38 +492,28 @@ router.put('/public/:publicId/submission', publicWriteLimiter, wrap(async (req, 
   const { answers, error } = cleanAnswers(form, req.body.answers);
   if (error) return fail(res, 400, error);
 
+  const dup = await duplicateMessage(form, answers, sub._id);
+  if (dup) return fail(res, 409, dup);
+
   sub.answers = answers;
   await sub.save();
   res.json({ success: true, submission: subOut(sub) });
 }));
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  CLASS ADMIN  (login required)
+//  OWNER  (any logged-in user can create forms)
 // ══════════════════════════════════════════════════════════════════════════════
 
-// POST /api/forms/upload-signature   body: { classId }
+// POST /api/forms/upload-signature
 // Short-lived permission to upload a logo / letterhead straight to Cloudinary.
-// Afterwards the app saves the returned image URL as logoUrl.
 router.post('/upload-signature', protect, uploadLimiter, wrap(async (req, res) => {
   if (!isConfigured()) return fail(res, 503, 'File uploads are not set up yet.');
-  const { classId } = req.body;
-  if (!isId(classId)) return fail(res, 400, 'Invalid class id.');
-
-  const cls = await Class.findById(classId);
-  if (!cls || !cls.isAdmin(req.user._id)) return fail(res, 403, 'Only class admins can do this.');
-
-  res.json({ success: true, upload: signUpload(String(cls._id)) });
+  res.json({ success: true, upload: signUpload(`forms-${req.user._id}`) });
 }));
 
-// POST /api/forms   body: { classId, title, description, logoUrl, fields }
+// POST /api/forms
+// body: { title, description, logoUrl, fields, classId?, closesAt?, uniqueFieldIndex? }
 router.post('/', protect, wrap(async (req, res) => {
-  const { classId } = req.body;
-  if (!isId(classId)) return fail(res, 400, 'Choose a class for this form.');
-
-  const cls = await Class.findById(classId);
-  if (!cls || cls.kind === 'dm' || cls.archived) return fail(res, 404, 'Class not found.');
-  if (!cls.isAdmin(req.user._id)) return fail(res, 403, 'Only class admins can create forms.');
-
   const title = String(req.body.title || '').trim();
   const description = String(req.body.description || '').trim();
   if (title.length < 2 || title.length > 150) return fail(res, 400, 'Title must be 2 to 150 characters.');
@@ -413,52 +525,37 @@ router.post('/', protect, wrap(async (req, res) => {
   const { fields, error } = sanitizeFields(req.body.fields);
   if (error) return fail(res, 400, error);
 
-  const count = await Form.countDocuments({ classId: cls._id });
-  if (count >= MAX_FORMS_PER_CLASS) {
-    return fail(res, 400, `A class can have up to ${MAX_FORMS_PER_CLASS} forms. Delete old ones first.`);
+  const cls = await resolveClass(req.body.classId, req.user._id);
+  if (cls.error) return fail(res, cls.status, cls.error);
+
+  const deadline = parseDeadline(req.body.closesAt, null);
+  if (deadline.error) return fail(res, 400, deadline.error);
+
+  const count = await Form.countDocuments({ owner: req.user._id });
+  if (count >= MAX_FORMS_PER_USER) {
+    return fail(res, 400, `You can have up to ${MAX_FORMS_PER_USER} forms. Delete old ones first.`);
   }
 
-  const form = await Form.create({
+  const form = new Form({
     owner: req.user._id,
-    classId: cls._id,
+    classId: cls.id,
     title,
     description,
     logoUrl,
     fields,
+    closesAt: deadline.value,
   });
+  form.uniqueFieldId = resolveUniqueId(form, req.body);
+  await form.save();
 
   res.status(201).json({ success: true, form: formOut(form, { responseCount: 0 }) });
 }));
 
-// GET /api/forms/class/:classId
-// Members see the open forms of their class (so they can fill them in the app).
-// Admins see every form with its response count.
-router.get('/class/:classId', protect, wrap(async (req, res) => {
-  if (!isId(req.params.classId)) return fail(res, 400, 'Invalid class id.');
-
-  const cls = await Class.findById(req.params.classId);
-  if (!cls || !cls.isActiveMember(req.user._id)) {
-    return fail(res, 403, 'You are not a member of this class.');
-  }
-
-  const iAmAdmin = cls.isAdmin(req.user._id);
-  const filter = { classId: cls._id };
-  if (!iAmAdmin) filter.status = 'open';
-
-  const forms = await Form.find(filter).sort({ createdAt: -1 }).limit(MAX_FORMS_PER_CLASS);
-
-  if (!iAmAdmin) {
-    return res.json({
-      success: true,
-      forms: forms.map((f) => ({
-        publicId:    f.publicId,
-        title:       f.title,
-        description: f.description,
-        logoUrl:     f.logoUrl,
-        createdAt:   f.createdAt,
-      })),
-    });
-  }
+// GET /api/forms/mine  → forms I created, with response counts
+router.get('/mine', protect, wrap(async (req, res) => {
+  const forms = await Form.find({ owner: req.user._id })
+    .sort({ createdAt: -1 })
+    .limit(MAX_FORMS_PER_USER);
 
   const counts = await FormSubmission.aggregate([
     { $match: { form: { $in: forms.map((f) => f._id) } } },
@@ -472,19 +569,52 @@ router.get('/class/:classId', protect, wrap(async (req, res) => {
   });
 }));
 
-// GET /api/forms/:id   (admin: full form, for editing)
+// GET /api/forms/class/:classId
+// Open forms that people shared with this class (class members only).
+router.get('/class/:classId', protect, wrap(async (req, res) => {
+  if (!isId(req.params.classId)) return fail(res, 400, 'Invalid class id.');
+
+  const cls = await Class.findById(req.params.classId);
+  if (!cls || !cls.isActiveMember(req.user._id)) {
+    return fail(res, 403, 'You are not a member of this class.');
+  }
+
+  const forms = await Form.find({
+    classId: cls._id,
+    status: 'open',
+    $or: [{ closesAt: null }, { closesAt: { $gt: new Date() } }],
+  })
+    .sort({ createdAt: -1 })
+    .limit(100);
+
+  res.json({
+    success: true,
+    forms: forms.map((f) => ({
+      publicId:    f.publicId,
+      title:       f.title,
+      description: f.description,
+      logoUrl:     f.logoUrl,
+      closesAt:    f.closesAt,
+      createdAt:   f.createdAt,
+    })),
+  });
+}));
+
+// GET /api/forms/:id   (owner: full form, for editing)
 router.get('/:id', protect, wrap(async (req, res) => {
-  const form = await getManagedForm(req, res);
+  const form = await getOwnedForm(req, res);
   if (!form) return;
   const responseCount = await FormSubmission.countDocuments({ form: form._id });
   res.json({ success: true, form: formOut(form, { responseCount }) });
 }));
 
-// PUT /api/forms/:id   body: any of { title, description, logoUrl, fields }
+// PUT /api/forms/:id
+// body: any of { title, description, logoUrl, fields, classId, closesAt,
+//                uniqueFieldIndex | uniqueFieldId, tableSettings }
 // Fields can only change while nobody has responded yet, because changing them
 // would break answers that are already saved.
 router.put('/:id', protect, wrap(async (req, res) => {
-  const form = await getManagedForm(req, res);
+  const form = await getOwnedForm(req, res);
   if (!form) return;
 
   const { title, description, logoUrl, fields } = req.body;
@@ -504,14 +634,32 @@ router.put('/:id', protect, wrap(async (req, res) => {
     if (l === null) return fail(res, 400, 'Upload the logo again.');
     form.logoUrl = l;
   }
+  if (req.body.classId !== undefined) {
+    const cls = await resolveClass(req.body.classId, req.user._id);
+    if (cls.error) return fail(res, cls.status, cls.error);
+    form.classId = cls.id;
+  }
+  if (req.body.closesAt !== undefined) {
+    const deadline = parseDeadline(req.body.closesAt, form.closesAt);
+    if (deadline.error) return fail(res, 400, deadline.error);
+    form.closesAt = deadline.value;
+  }
   if (fields !== undefined) {
     const responses = await FormSubmission.countDocuments({ form: form._id });
     if (responses > 0) {
-      return fail(res, 409, 'Fields cannot be changed after people have responded. Duplicate the form instead.');
+      return fail(res, 409, 'Questions cannot be changed after people have responded.');
     }
     const clean = sanitizeFields(fields);
     if (clean.error) return fail(res, 400, clean.error);
     form.fields = clean.fields;
+  }
+  if (req.body.uniqueFieldIndex !== undefined || req.body.uniqueFieldId !== undefined) {
+    form.uniqueFieldId = resolveUniqueId(form, req.body);
+  } else if (fields !== undefined) {
+    form.uniqueFieldId = '';
+  }
+  if (req.body.tableSettings !== undefined) {
+    form.tableSettings = sanitizeSettings(req.body.tableSettings, form);
   }
 
   await form.save();
@@ -521,7 +669,7 @@ router.put('/:id', protect, wrap(async (req, res) => {
 
 // POST /api/forms/:id/collect  → close the form and lock all responses
 router.post('/:id/collect', protect, wrap(async (req, res) => {
-  const form = await getManagedForm(req, res);
+  const form = await getOwnedForm(req, res);
   if (!form) return;
   form.status = 'collected';
   form.collectedAt = new Date();
@@ -529,19 +677,21 @@ router.post('/:id/collect', protect, wrap(async (req, res) => {
   res.json({ success: true, form: formOut(form) });
 }));
 
-// POST /api/forms/:id/reopen  → people can submit and edit again
+// POST /api/forms/:id/reopen  → people can submit and edit again.
+// If the deadline has already passed, it is removed so the form really opens.
 router.post('/:id/reopen', protect, wrap(async (req, res) => {
-  const form = await getManagedForm(req, res);
+  const form = await getOwnedForm(req, res);
   if (!form) return;
   form.status = 'open';
   form.collectedAt = null;
+  if (form.closesAt && form.closesAt.getTime() <= Date.now()) form.closesAt = null;
   await form.save();
   res.json({ success: true, form: formOut(form) });
 }));
 
-// GET /api/forms/:id/responses  → everything the admin needs for the table / PDF / print
+// GET /api/forms/:id/responses
 router.get('/:id/responses', protect, wrap(async (req, res) => {
-  const form = await getManagedForm(req, res);
+  const form = await getOwnedForm(req, res);
   if (!form) return;
 
   const rows = await FormSubmission.find({ form: form._id })
@@ -562,7 +712,7 @@ router.get('/:id/responses', protect, wrap(async (req, res) => {
 
 // DELETE /api/forms/:id  → removes the form and all its responses
 router.delete('/:id', protect, wrap(async (req, res) => {
-  const form = await getManagedForm(req, res);
+  const form = await getOwnedForm(req, res);
   if (!form) return;
   await FormSubmission.deleteMany({ form: form._id });
   await form.deleteOne();
