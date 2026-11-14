@@ -44,6 +44,15 @@ app.use(
   })
 );
 
+// ── Paystack webhook ──────────────────────────────────────────────────────────
+// Must come BEFORE the rate limiter and BEFORE express.json(): the signature is
+// checked against the exact bytes Paystack sent.
+app.post(
+  '/api/payments/webhook',
+  express.raw({ type: 'application/json', limit: '1mb' }),
+  require('./routes/paymentWebhook'),
+);
+
 // ── General rate limiter ──────────────────────────────────────────────────────
 app.use(
   rateLimit({
@@ -81,6 +90,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/courses', courseRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/payments', require('./routes/payments'));
 app.use('/api/timetable', timetableRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/announcements', announcementRoutes);

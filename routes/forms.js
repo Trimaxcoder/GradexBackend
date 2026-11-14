@@ -8,6 +8,8 @@ const User             = require('../models/User');
 const Class            = require('../models/Class');
 const Form             = require('../models/Form');
 const FormSubmission   = require('../models/FormSubmission');
+const PayoutAccount    = require('../models/PayoutAccount');
+const { quoteFor, MIN_DUE_KOBO, MAX_DUE_KOBO } = require('../utils/charges');
 const { isConfigured, signUpload } = require('../utils/cloudinary');
 const { displayName }  = require('../utils/displayName');
 
@@ -168,6 +170,7 @@ const sanitizeSettings = (raw, form) => {
     numbered: r.numbered !== false,
     numberLabel: String(r.numberLabel ?? 'S/N').trim().slice(0, 12) || 'S/N',
     showSubmitter: r.showSubmitter === true,
+    showPayment: r.showPayment !== false,
     align: pick(r.align, ['left', 'center', 'right'], 'left'),
     headerCase: pick(r.headerCase, CASES, 'none'),
     cellCase: pick(r.cellCase, CASES, 'none'),
@@ -179,9 +182,43 @@ const sanitizeSettings = (raw, form) => {
       .map(String)
       .filter((id) => ids.has(id)),
     firstFieldId: ids.has(String(r.firstFieldId)) ? String(r.firstFieldId) : '',
-    sortFieldId: ids.has(String(r.sortFieldId)) ? String(r.sortFieldId) : '',
+    // '__paidAt' = sort by the date of payment
+    sortFieldId: ids.has(String(r.sortFieldId)) || r.sortFieldId === '__paidAt'
+      ? String(r.sortFieldId)
+      : '',
     sortDir: pick(r.sortDir, ['asc', 'desc'], 'asc'),
     signatories: cleanList(r.signatories, 4, 40),
+  };
+};
+
+// Payment setup (class dues). The amount is stored in kobo (₦1 = 100 kobo).
+// The money goes to a bank account that belongs to the person creating the form.
+const sanitizePayment = async (raw, userId) => {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  if (r.enabled !== true) return { payment: { enabled: false } };
+
+  const naira = Number(r.amountNaira);
+  const amountKobo = Math.round(naira * 100);
+  if (!Number.isFinite(naira) || amountKobo < MIN_DUE_KOBO || amountKobo > MAX_DUE_KOBO) {
+    return {
+      error: `The amount must be between ₦${MIN_DUE_KOBO / 100} and ₦${(MAX_DUE_KOBO / 100).toLocaleString('en-NG')}.`,
+    };
+  }
+
+  if (!isId(r.payoutAccountId)) return { error: 'Choose the bank account that receives the money.' };
+  const acct = await PayoutAccount.findOne({ _id: r.payoutAccountId, owner: userId, status: 'active' });
+  if (!acct) return { error: 'That bank account is not available.' };
+
+  return {
+    payment: {
+      enabled: true,
+      amountKobo,
+      label: String(r.label || '').trim().slice(0, 100),
+      payoutAccount: acct._id,
+      collectorName: acct.accountName,
+      bankName: acct.bankName,
+      accountLast4: acct.accountLast4,
+    },
   };
 };
 
@@ -308,6 +345,23 @@ const fieldOut = (f) => ({
   profileKey: f.profileKey,
 });
 
+// What the pay screen shows. The student sees exactly what will be charged.
+const paymentOut = (form) => {
+  const p = form.payment;
+  if (!p || !p.enabled) return { enabled: false };
+  const q = quoteFor(p.amountKobo);
+  return {
+    enabled: true,
+    label: p.label || '',
+    dueKobo: q.dueKobo,
+    feesKobo: q.feesKobo,
+    totalKobo: q.totalKobo,
+    collectorName: p.collectorName,
+    bankName: p.bankName,
+    accountLast4: p.accountLast4,
+  };
+};
+
 // What the public (fill) screen needs. Nothing about the owner.
 const publicForm = (form) => ({
   publicId:    form.publicId,
@@ -317,6 +371,7 @@ const publicForm = (form) => ({
   status:      isOpen(form) ? 'open' : 'collected',
   expired:     effectiveStatus(form) === 'expired',
   closesAt:    form.closesAt,
+  payment:     paymentOut(form),
   fields:      form.fields.map(fieldOut),
 });
 
@@ -333,6 +388,10 @@ const formOut = (form, extra = {}) => ({
   collectedAt:     form.collectedAt,
   closesAt:        form.closesAt,
   uniqueFieldId:   form.uniqueFieldId || '',
+  payment:         paymentOut(form),
+  paymentSetup:    form.payment && form.payment.enabled
+    ? { amountKobo: form.payment.amountKobo, payoutAccountId: String(form.payment.payoutAccount || '') }
+    : null,
   tableSettings:   form.tableSettings && form.tableSettings.toObject
     ? form.tableSettings.toObject()
     : {},
@@ -351,6 +410,9 @@ const subOut = (s) => ({
   })),
   submittedAt: s.createdAt,
   updatedAt:   s.updatedAt,
+  paymentStatus: s.paymentStatus || 'none',
+  paidAt:        s.paidAt || null,
+  paymentRef:    s.paymentRef || '',
 });
 
 // Profile values the student can use to autofill, keyed by field id
@@ -429,6 +491,9 @@ router.post('/public/:publicId/submit', publicWriteLimiter, optionalAuth, wrap(a
   if (req.user) {
     const existing = await FormSubmission.findOne({ form: form._id, user: req.user._id });
     if (existing) {
+      if (existing.paymentStatus === 'paid' || existing.paymentStatus === 'cash') {
+        return fail(res, 403, 'This response is already paid and can no longer be changed.');
+      }
       const dup = await duplicateMessage(form, answers, existing._id);
       if (dup) return fail(res, 409, dup);
       existing.answers = answers;
@@ -445,7 +510,12 @@ router.post('/public/:publicId/submit', publicWriteLimiter, optionalAuth, wrap(a
 
   if (req.user) {
     try {
-      const sub = await FormSubmission.create({ form: form._id, user: req.user._id, answers });
+      const sub = await FormSubmission.create({
+        form: form._id,
+        user: req.user._id,
+        answers,
+        paymentStatus: form.payment && form.payment.enabled ? 'unpaid' : 'none',
+      });
       return res.status(201).json({ success: true, submission: subOut(sub) });
     } catch (err) {
       if (err.code === 11000) return fail(res, 409, 'You already submitted. Open the form again to edit.');
@@ -458,6 +528,7 @@ router.post('/public/:publicId/submit', publicWriteLimiter, optionalAuth, wrap(a
     form: form._id,
     answers,
     editTokenHash: FormSubmission.hashToken(editToken),
+    paymentStatus: form.payment && form.payment.enabled ? 'unpaid' : 'none',
   });
   res.status(201).json({ success: true, submission: subOut(sub), editToken });
 }));
@@ -491,6 +562,10 @@ router.put('/public/:publicId/submission', publicWriteLimiter, wrap(async (req, 
 
   const { answers, error } = cleanAnswers(form, req.body.answers);
   if (error) return fail(res, 400, error);
+
+  if (sub.paymentStatus === 'paid' || sub.paymentStatus === 'cash') {
+    return fail(res, 403, 'This response is already paid and can no longer be changed.');
+  }
 
   const dup = await duplicateMessage(form, answers, sub._id);
   if (dup) return fail(res, 409, dup);
@@ -531,6 +606,13 @@ router.post('/', protect, wrap(async (req, res) => {
   const deadline = parseDeadline(req.body.closesAt, null);
   if (deadline.error) return fail(res, 400, deadline.error);
 
+  let payment = { enabled: false };
+  if (req.body.payment !== undefined) {
+    const p = await sanitizePayment(req.body.payment, req.user._id);
+    if (p.error) return fail(res, 400, p.error);
+    payment = p.payment;
+  }
+
   const count = await Form.countDocuments({ owner: req.user._id });
   if (count >= MAX_FORMS_PER_USER) {
     return fail(res, 400, `You can have up to ${MAX_FORMS_PER_USER} forms. Delete old ones first.`);
@@ -544,6 +626,7 @@ router.post('/', protect, wrap(async (req, res) => {
     logoUrl,
     fields,
     closesAt: deadline.value,
+    payment,
   });
   form.uniqueFieldId = resolveUniqueId(form, req.body);
   await form.save();
@@ -660,6 +743,15 @@ router.put('/:id', protect, wrap(async (req, res) => {
   }
   if (req.body.tableSettings !== undefined) {
     form.tableSettings = sanitizeSettings(req.body.tableSettings, form);
+  }
+  if (req.body.payment !== undefined) {
+    const responses = await FormSubmission.countDocuments({ form: form._id });
+    if (responses > 0) {
+      return fail(res, 409, 'Payment settings cannot change after people have responded.');
+    }
+    const p = await sanitizePayment(req.body.payment, req.user._id);
+    if (p.error) return fail(res, 400, p.error);
+    form.payment = p.payment;
   }
 
   await form.save();

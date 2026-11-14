@@ -46,6 +46,8 @@ const TableSettingsSchema = new mongoose.Schema(
     numbered: { type: Boolean, default: true },
     numberLabel: { type: String, default: "S/N", maxlength: 12 },
     showSubmitter: { type: Boolean, default: false },
+    // Payment status and "paid on" columns (only used when the form takes payment)
+    showPayment: { type: Boolean, default: true },
     align: { type: String, enum: ["left", "center", "right"], default: "left" },
     headerCase: { type: String, enum: CASES, default: "none" },
     cellCase: { type: String, enum: CASES, default: "none" },
@@ -97,6 +99,25 @@ const FormSchema = new mongoose.Schema(
 
     // Question that must be different for every response (e.g. matric number)
     uniqueFieldId: { type: String, default: "" },
+
+    // Optional payment (class dues). The money goes straight to the creator's
+    // bank account through the payment company. SchoolLife never holds it.
+    payment: {
+      type: new mongoose.Schema(
+        {
+          enabled: { type: Boolean, default: false },
+          amountKobo: { type: Number, default: 0 }, // ₦1 = 100 kobo
+          label: { type: String, default: "", maxlength: 100 },
+          payoutAccount: { type: mongoose.Schema.Types.ObjectId, ref: "PayoutAccount" },
+          // copied from the payout account, so the pay screen can show who is collecting
+          collectorName: { type: String, default: "" },
+          bankName: { type: String, default: "" },
+          accountLast4: { type: String, default: "" },
+        },
+        { _id: false },
+      ),
+      default: () => ({}),
+    },
 
     tableSettings: { type: TableSettingsSchema, default: () => ({}) },
 

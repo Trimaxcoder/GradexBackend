@@ -27,6 +27,17 @@ const FormSubmissionSchema = new mongoose.Schema(
     editTokenHash: { type: String, select: false },
 
     answers: { type: [AnswerSchema], default: [] },
+
+    // none = this form takes no payment; unpaid / paid (online) / cash (paid by hand)
+    paymentStatus: {
+      type: String,
+      enum: ['none', 'unpaid', 'paid', 'cash'],
+      default: 'none',
+      index: true,
+    },
+    paidAt: { type: Date, default: null },
+    paymentRef: { type: String, default: '' },
+    cashNote: { type: String, default: '', maxlength: 200 },
   },
   { timestamps: true },
 );
