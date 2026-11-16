@@ -222,6 +222,19 @@ const sanitizePayment = async (raw, userId) => {
   };
 };
 
+// Settings for sharing results with the people who responded
+const sanitizeShare = (raw, form) => {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const ids = new Set(form.fields.map((f) => f.id));
+  return {
+    enabled: r.enabled === true,
+    when: pick(r.when, ['anytime', 'afterClosed'], 'anytime'),
+    hiddenFieldIds: (Array.isArray(r.hiddenFieldIds) ? r.hiddenFieldIds : [])
+      .map(String)
+      .filter((id) => ids.has(id)),
+  };
+};
+
 // Which question must be unique. Uses the position in `fields` when the fields
 // were just sent (their ids can change), or the id when only settings changed.
 const resolveUniqueId = (form, body) => {
@@ -362,6 +375,19 @@ const paymentOut = (form) => {
   };
 };
 
+const shareOut = (form) => ({
+  enabled: !!(form.share && form.share.enabled),
+  when: (form.share && form.share.when) || 'anytime',
+  hiddenFieldIds: form.share && form.share.hiddenFieldIds ? [...form.share.hiddenFieldIds] : [],
+});
+
+// What a person filling the form is told about sharing
+const sharePublic = (form) => {
+  const enabled = !!(form.share && form.share.enabled);
+  const when = (form.share && form.share.when) || 'anytime';
+  return { enabled, when, available: enabled && (when === 'anytime' || !isOpen(form)) };
+};
+
 // What the public (fill) screen needs. Nothing about the owner.
 const publicForm = (form) => ({
   publicId:    form.publicId,
@@ -372,6 +398,7 @@ const publicForm = (form) => ({
   expired:     effectiveStatus(form) === 'expired',
   closesAt:    form.closesAt,
   payment:     paymentOut(form),
+  share:       sharePublic(form),
   fields:      form.fields.map(fieldOut),
 });
 
@@ -389,6 +416,7 @@ const formOut = (form, extra = {}) => ({
   closesAt:        form.closesAt,
   uniqueFieldId:   form.uniqueFieldId || '',
   payment:         paymentOut(form),
+  share:           shareOut(form),
   paymentSetup:    form.payment && form.payment.enabled
     ? { amountKobo: form.payment.amountKobo, payoutAccountId: String(form.payment.payoutAccount || '') }
     : null,
@@ -576,6 +604,87 @@ router.put('/public/:publicId/submission', publicWriteLimiter, wrap(async (req, 
 }));
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  SHARED RESULTS  (people who responded can see everyone's answers)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/forms/public/:publicId/results   body: { editToken? }
+// Only works when the creator switched sharing on, and only for someone who
+// really responded (logged-in owner of a response, or a guest with their edit
+// token). Questions the creator hid are never sent, and nobody's name or email
+// is added: only the answers.
+router.post('/public/:publicId/results', publicReadLimiter, optionalAuth, wrap(async (req, res) => {
+  const form = await Form.findOne({ publicId: String(req.params.publicId || '').slice(0, 20) });
+  if (!form) return fail(res, 404, 'Form not found.');
+
+  if (!form.share || !form.share.enabled) {
+    return fail(res, 403, 'The creator has not shared the responses of this form.');
+  }
+  if (form.share.when === 'afterClosed' && isOpen(form)) {
+    return fail(res, 403, 'The responses will be visible after this form closes.');
+  }
+
+  // Did this person respond?
+  let responded = false;
+  if (req.user) {
+    responded = !!(await FormSubmission.exists({ form: form._id, user: req.user._id }));
+  }
+  if (!responded) {
+    responded = !!(await findByToken(form._id, req.body.editToken));
+  }
+  if (!responded) return fail(res, 403, "Fill in this form first to see everyone's responses.");
+
+  const hidden = new Set(form.share.hiddenFieldIds || []);
+  const fields = form.fields.filter((f) => !hidden.has(f.id));
+  const visible = new Set(fields.map((f) => f.id));
+
+  const rows = await FormSubmission.find({ form: form._id })
+    .sort({ createdAt: 1 })
+    .limit(MAX_RESPONSES)
+    .select('answers');
+
+  const t = form.tableSettings && form.tableSettings.toObject ? form.tableSettings.toObject() : {};
+  const settings = {
+    numbered: t.numbered !== false,
+    numberLabel: t.numberLabel || 'S/N',
+    align: t.align || 'left',
+    headerCase: t.headerCase || 'none',
+    cellCase: t.cellCase || 'none',
+    fontSize: t.fontSize || 'normal',
+    orientation: t.orientation || 'landscape',
+    firstFieldId: visible.has(t.firstFieldId) ? t.firstFieldId : '',
+    sortFieldId: visible.has(t.sortFieldId) ? t.sortFieldId : '',
+    sortDir: t.sortDir || 'asc',
+    // never shared with respondents
+    showSubmitter: false,
+    showPayment: false,
+    blankRows: 0,
+    blankColumns: [],
+    hiddenFieldIds: [],
+    signatories: [],
+  };
+
+  res.json({
+    success: true,
+    form: {
+      title: form.title,
+      description: form.description,
+      logoUrl: form.logoUrl,
+      fields: fields.map(fieldOut),
+    },
+    settings,
+    responses: rows.map((s, i) => ({
+      id: String(i + 1), // a plain number, never the real response id
+      respondent: '',
+      paymentStatus: 'none',
+      answers: s.answers
+        .filter((a) => visible.has(a.fieldId))
+        .map((a) => ({ fieldId: a.fieldId, value: a.value })),
+    })),
+    count: rows.length,
+  });
+}));
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  OWNER  (any logged-in user can create forms)
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -743,6 +852,9 @@ router.put('/:id', protect, wrap(async (req, res) => {
   }
   if (req.body.tableSettings !== undefined) {
     form.tableSettings = sanitizeSettings(req.body.tableSettings, form);
+  }
+  if (req.body.share !== undefined) {
+    form.share = sanitizeShare(req.body.share, form);
   }
   if (req.body.payment !== undefined) {
     const responses = await FormSubmission.countDocuments({ form: form._id });

@@ -102,6 +102,7 @@ app.use('/api/calls', require('./routes/calls'));
 app.use('/api/academic', require('./routes/academic'));
 app.use('/api/carryover', require('./routes/carryover'));
 app.use('/api/forms', require('./routes/forms'));
+app.use('/api/polls', require('./routes/polls'));
 
 // ── 404 & Error Handlers ──────────────────────────────────────────────────────
 app.use(notFound);

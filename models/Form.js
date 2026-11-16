@@ -100,6 +100,21 @@ const FormSchema = new mongoose.Schema(
     // Question that must be different for every response (e.g. matric number)
     uniqueFieldId: { type: String, default: "" },
 
+    // Let people who filled the form see everyone's responses
+    share: {
+      type: new mongoose.Schema(
+        {
+          enabled: { type: Boolean, default: false },
+          // anytime = as soon as they have responded; afterClosed = once the form is closed
+          when: { type: String, enum: ["anytime", "afterClosed"], default: "anytime" },
+          // Questions hidden from respondents (e.g. phone numbers)
+          hiddenFieldIds: { type: [String], default: [] },
+        },
+        { _id: false },
+      ),
+      default: () => ({}),
+    },
+
     // Optional payment (class dues). The money goes straight to the creator's
     // bank account through the payment company. SchoolLife never holds it.
     payment: {
