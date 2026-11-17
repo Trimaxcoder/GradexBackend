@@ -36,7 +36,9 @@ const QuestionSchema = new mongoose.Schema(
 
 const PollSchema = new mongoose.Schema(
   {
-    owner: { type: ObjectId, ref: 'User', required: true, index: true },
+    // A SchoolLife user... or a Gmail guest, who has no account. Exactly one is set.
+    owner: { type: ObjectId, ref: 'User', index: true },
+    ownerEmail: { type: String, default: '', lowercase: true, trim: true, index: true },
 
     // Optional: share with a class. Members see it in their Polls.
     classId: { type: ObjectId, ref: 'Class', default: null, index: true },
@@ -58,6 +60,8 @@ const PollSchema = new mongoose.Schema(
     requireAccount: { type: Boolean, default: false }, // SchoolLife account needed
     classOnly: { type: Boolean, default: false }, // only active members of classId
     requireCode: { type: Boolean, default: false }, // private: needs the code
+    // Guests must sign in with Gmail, so it is one vote per Gmail address
+    requireGmail: { type: Boolean, default: false },
     code: { type: String, default: '' }, // shown to the owner so they can share it
 
     // ── The ballot ──
@@ -73,6 +77,8 @@ const PollSchema = new mongoose.Schema(
     },
 
     status: { type: String, enum: ['open', 'closed'], default: 'open' },
+    // Voting opens at this time (elections are usually scheduled)
+    opensAt: { type: Date, default: null },
     closesAt: { type: Date, default: null },
     closedAt: { type: Date, default: null },
 

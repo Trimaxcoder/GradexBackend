@@ -4,6 +4,8 @@ const jwt       = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 
 const { protect }      = require('../middleware/auth');
+const identify         = require('../middleware/identify');
+const crypto           = require('crypto');
 const User             = require('../models/User');
 const Class            = require('../models/Class');
 const Form             = require('../models/Form');
@@ -19,6 +21,26 @@ const MAX_FORMS_PER_USER = 200;
 const MAX_RESPONSES      = 3000;
 
 const isId = mongoose.isValidObjectId;
+
+// ── Who is acting: a SchoolLife user (req.user) or a Gmail guest (req.guest) ──
+const ownerFilter = (req) =>
+  req.user ? { owner: req.user._id } : { ownerEmail: req.guest.email };
+
+const ownerFields = (req) =>
+  req.user ? { owner: req.user._id } : { ownerEmail: req.guest.email };
+
+const userIdOf = (req) => (req.user ? req.user._id : null);
+
+const isOwner = (doc, req) =>
+  req.user
+    ? !!doc.owner && String(doc.owner) === String(req.user._id)
+    : !!req.guest && !!doc.ownerEmail && doc.ownerEmail === req.guest.email;
+
+// Used for upload limits and folder names. Never contains the email itself.
+const actorKey = (req) =>
+  req.user
+    ? String(req.user._id)
+    : `g-${crypto.createHash('sha256').update(req.guest.email).digest('hex').slice(0, 12)}`;
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 const wrap = (fn) => (req, res, next) =>
@@ -65,7 +87,7 @@ const publicWriteLimiter = rateLimit({
 const uploadLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => String(req.user && req.user._id),
+  keyGenerator: (req) => actorKey(req),
   validate: false,
   message: { success: false, message: 'Too many uploads. Try again in a few minutes.' },
   standardHeaders: true,
@@ -196,6 +218,7 @@ const sanitizeSettings = (raw, form) => {
 const sanitizePayment = async (raw, userId) => {
   const r = raw && typeof raw === 'object' ? raw : {};
   if (r.enabled !== true) return { payment: { enabled: false } };
+  if (!userId) return { error: 'Collecting payment needs a SchoolLife account.' };
 
   const naira = Number(r.amountNaira);
   const amountKobo = Math.round(naira * 100);
@@ -464,7 +487,7 @@ const getOwnedForm = async (req, res) => {
   if (!isId(req.params.id)) { fail(res, 400, 'Invalid form id.'); return null; }
   const form = await Form.findById(req.params.id);
   if (!form) { fail(res, 404, 'Form not found.'); return null; }
-  if (String(form.owner) !== String(req.user._id)) {
+  if (!isOwner(form, req)) {
     fail(res, 403, 'Only the person who created this form can do this.');
     return null;
   }
@@ -475,6 +498,7 @@ const getOwnedForm = async (req, res) => {
 // Returns { id } (id may be null) or { status, error }.
 const resolveClass = async (classId, userId) => {
   if (!classId) return { id: null };
+  if (!userId) return { status: 403, error: 'Sharing with a class needs a SchoolLife account.' };
   if (!isId(classId)) return { status: 400, error: 'Invalid class.' };
   const cls = await Class.findById(classId);
   if (!cls || cls.kind === 'dm' || cls.archived) return { status: 404, error: 'Class not found.' };
@@ -690,14 +714,14 @@ router.post('/public/:publicId/results', publicReadLimiter, optionalAuth, wrap(a
 
 // POST /api/forms/upload-signature
 // Short-lived permission to upload a logo / letterhead straight to Cloudinary.
-router.post('/upload-signature', protect, uploadLimiter, wrap(async (req, res) => {
+router.post('/upload-signature', identify, uploadLimiter, wrap(async (req, res) => {
   if (!isConfigured()) return fail(res, 503, 'File uploads are not set up yet.');
-  res.json({ success: true, upload: signUpload(`forms-${req.user._id}`) });
+  res.json({ success: true, upload: signUpload(`forms-${actorKey(req)}`) });
 }));
 
 // POST /api/forms
 // body: { title, description, logoUrl, fields, classId?, closesAt?, uniqueFieldIndex? }
-router.post('/', protect, wrap(async (req, res) => {
+router.post('/', identify, wrap(async (req, res) => {
   const title = String(req.body.title || '').trim();
   const description = String(req.body.description || '').trim();
   if (title.length < 2 || title.length > 150) return fail(res, 400, 'Title must be 2 to 150 characters.');
@@ -709,7 +733,7 @@ router.post('/', protect, wrap(async (req, res) => {
   const { fields, error } = sanitizeFields(req.body.fields);
   if (error) return fail(res, 400, error);
 
-  const cls = await resolveClass(req.body.classId, req.user._id);
+  const cls = await resolveClass(req.body.classId, userIdOf(req));
   if (cls.error) return fail(res, cls.status, cls.error);
 
   const deadline = parseDeadline(req.body.closesAt, null);
@@ -717,18 +741,19 @@ router.post('/', protect, wrap(async (req, res) => {
 
   let payment = { enabled: false };
   if (req.body.payment !== undefined) {
-    const p = await sanitizePayment(req.body.payment, req.user._id);
+    const p = await sanitizePayment(req.body.payment, userIdOf(req));
     if (p.error) return fail(res, 400, p.error);
     payment = p.payment;
   }
 
-  const count = await Form.countDocuments({ owner: req.user._id });
-  if (count >= MAX_FORMS_PER_USER) {
-    return fail(res, 400, `You can have up to ${MAX_FORMS_PER_USER} forms. Delete old ones first.`);
+  const maxForms = req.user ? MAX_FORMS_PER_USER : 50; // guests get a smaller limit
+  const count = await Form.countDocuments(ownerFilter(req));
+  if (count >= maxForms) {
+    return fail(res, 400, `You can have up to ${maxForms} forms. Delete old ones first.`);
   }
 
   const form = new Form({
-    owner: req.user._id,
+    ...ownerFields(req),
     classId: cls.id,
     title,
     description,
@@ -744,8 +769,8 @@ router.post('/', protect, wrap(async (req, res) => {
 }));
 
 // GET /api/forms/mine  → forms I created, with response counts
-router.get('/mine', protect, wrap(async (req, res) => {
-  const forms = await Form.find({ owner: req.user._id })
+router.get('/mine', identify, wrap(async (req, res) => {
+  const forms = await Form.find(ownerFilter(req))
     .sort({ createdAt: -1 })
     .limit(MAX_FORMS_PER_USER);
 
@@ -793,7 +818,7 @@ router.get('/class/:classId', protect, wrap(async (req, res) => {
 }));
 
 // GET /api/forms/:id   (owner: full form, for editing)
-router.get('/:id', protect, wrap(async (req, res) => {
+router.get('/:id', identify, wrap(async (req, res) => {
   const form = await getOwnedForm(req, res);
   if (!form) return;
   const responseCount = await FormSubmission.countDocuments({ form: form._id });
@@ -805,7 +830,7 @@ router.get('/:id', protect, wrap(async (req, res) => {
 //                uniqueFieldIndex | uniqueFieldId, tableSettings }
 // Fields can only change while nobody has responded yet, because changing them
 // would break answers that are already saved.
-router.put('/:id', protect, wrap(async (req, res) => {
+router.put('/:id', identify, wrap(async (req, res) => {
   const form = await getOwnedForm(req, res);
   if (!form) return;
 
@@ -827,7 +852,7 @@ router.put('/:id', protect, wrap(async (req, res) => {
     form.logoUrl = l;
   }
   if (req.body.classId !== undefined) {
-    const cls = await resolveClass(req.body.classId, req.user._id);
+    const cls = await resolveClass(req.body.classId, userIdOf(req));
     if (cls.error) return fail(res, cls.status, cls.error);
     form.classId = cls.id;
   }
@@ -861,7 +886,7 @@ router.put('/:id', protect, wrap(async (req, res) => {
     if (responses > 0) {
       return fail(res, 409, 'Payment settings cannot change after people have responded.');
     }
-    const p = await sanitizePayment(req.body.payment, req.user._id);
+    const p = await sanitizePayment(req.body.payment, userIdOf(req));
     if (p.error) return fail(res, 400, p.error);
     form.payment = p.payment;
   }
@@ -872,7 +897,7 @@ router.put('/:id', protect, wrap(async (req, res) => {
 }));
 
 // POST /api/forms/:id/collect  → close the form and lock all responses
-router.post('/:id/collect', protect, wrap(async (req, res) => {
+router.post('/:id/collect', identify, wrap(async (req, res) => {
   const form = await getOwnedForm(req, res);
   if (!form) return;
   form.status = 'collected';
@@ -883,7 +908,7 @@ router.post('/:id/collect', protect, wrap(async (req, res) => {
 
 // POST /api/forms/:id/reopen  → people can submit and edit again.
 // If the deadline has already passed, it is removed so the form really opens.
-router.post('/:id/reopen', protect, wrap(async (req, res) => {
+router.post('/:id/reopen', identify, wrap(async (req, res) => {
   const form = await getOwnedForm(req, res);
   if (!form) return;
   form.status = 'open';
@@ -894,7 +919,7 @@ router.post('/:id/reopen', protect, wrap(async (req, res) => {
 }));
 
 // GET /api/forms/:id/responses
-router.get('/:id/responses', protect, wrap(async (req, res) => {
+router.get('/:id/responses', identify, wrap(async (req, res) => {
   const form = await getOwnedForm(req, res);
   if (!form) return;
 
@@ -915,7 +940,7 @@ router.get('/:id/responses', protect, wrap(async (req, res) => {
 }));
 
 // DELETE /api/forms/:id  → removes the form and all its responses
-router.delete('/:id', protect, wrap(async (req, res) => {
+router.delete('/:id', identify, wrap(async (req, res) => {
   const form = await getOwnedForm(req, res);
   if (!form) return;
   await FormSubmission.deleteMany({ form: form._id });

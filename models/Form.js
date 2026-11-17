@@ -71,12 +71,13 @@ const TableSettingsSchema = new mongoose.Schema(
 
 const FormSchema = new mongoose.Schema(
   {
+    // A SchoolLife user... or a Gmail guest, who has no account. Exactly one is set.
     owner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
       index: true,
     },
+    ownerEmail: { type: String, default: "", lowercase: true, trim: true, index: true },
     // Optional: the class this form belongs to
     classId: { type: mongoose.Schema.Types.ObjectId, ref: "Class", default: null },
 
