@@ -52,6 +52,14 @@ const MessageSchema = new mongoose.Schema(
     sharedFrom:  { type: String, default: '', maxlength: 120 }, // class the card was shared from
     text:    { type: String, trim: true, maxlength: 2000, default: '' },
     attachment: { type: AttachmentSchema, default: null },
+    // VIEW ONCE: a photo or voice note that each person can open one time.
+    // The real file link is never sent to any app. A recipient asks the
+    // server to open it (socket "viewonce:open") and gets a private,
+    // short-lived copy. `viewedBy` holds the people who already opened it;
+    // `viewOnceGone` is true once the original file has been deleted.
+    viewOnce:     { type: Boolean, default: false },
+    viewedBy:     { type: [ObjectId], default: [] },
+    viewOnceGone: { type: Boolean, default: false },
     call:    { type: CallLogSchema, default: null }, // set on call entries only
     replyTo: { type: ObjectId, ref: 'ClassMessage', default: null },
     reactions: { type: [ReactionSchema], default: [] },
@@ -70,12 +78,15 @@ MessageSchema.index({ class: 1, _id: -1 });
 MessageSchema.index({ class: 1, pinned: 1 });
 // Rate limit for anonymous cards (per token, per class)
 MessageSchema.index({ class: 1, anonToken: 1, createdAt: -1 }, { sparse: true });
+// Finds view-once files that are due to be removed
+MessageSchema.index({ viewOnce: 1, viewOnceGone: 1, createdAt: 1 });
 
 // What a reply preview shows when the original has no text
 const labelFor = (m) => {
   if (m.text) return String(m.text).slice(0, 120);
   const a = m.attachment;
   if (!a) return '';
+  if (m.viewOnce) return a.kind === 'audio' ? 'View once voice note' : 'View once photo';
   if (a.kind === 'image') return 'Photo';
   if (a.kind === 'audio') return 'Voice note';
   return a.name ? `File: ${a.name}` : 'File';
@@ -98,14 +109,23 @@ MessageSchema.methods.toClient = function () {
   }
 
   const a = this.attachment;
-  const attachment = !this.deleted && a && a.url
-    ? { kind: a.kind, url: a.url, name: a.name, size: a.size, mime: a.mime, duration: a.duration }
-    : null;
+  let attachment = null;
+  if (!this.deleted && a) {
+    if (this.viewOnce) {
+      // NEVER send the link of a view-once file: only what is needed to
+      // draw the "tap to view" card.
+      attachment = { kind: a.kind, url: '', name: '', size: 0, mime: '', duration: a.duration || 0 };
+    } else if (a.url) {
+      attachment = { kind: a.kind, url: a.url, name: a.name, size: a.size, mime: a.mime, duration: a.duration };
+    }
+  }
 
   const c = this.call;
   const call = c && c.outcome
     ? { callId: c.callId ? String(c.callId) : '', kind: c.kind, outcome: c.outcome, durationSec: c.durationSec || 0 }
     : null;
+
+  const once = !!this.viewOnce && !this.deleted;
 
   return {
     id:        String(this._id),
@@ -117,6 +137,9 @@ MessageSchema.methods.toClient = function () {
     sharedFrom: this.anon ? (this.sharedFrom || '') : '',
     text:      this.deleted ? '' : this.text,
     attachment,
+    viewOnce:  once,
+    viewedBy:  once ? (this.viewedBy || []).map(String) : [],
+    mediaGone: once && !!this.viewOnceGone,
     call,
     deleted:   !!this.deleted,
     pinned:    !!this.pinned,
@@ -135,7 +158,7 @@ ClassMessage.POPULATE = [
   { path: 'sender', select: 'profile.name username' },
   {
     path:     'replyTo',
-    select:   'text deleted sender attachment anon',
+    select:   'text deleted sender attachment anon viewOnce',
     populate: { path: 'sender', select: 'profile.name username' },
   },
 ];
