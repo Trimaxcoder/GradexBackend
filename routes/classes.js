@@ -195,6 +195,8 @@ const previewOf = (m) => {
   if (m.text) return String(m.text).replace(/\s+/g, ' ').trim().slice(0, 120);
   const a = m.attachment;
   if (!a) return '';
+  // View once never shows what it is, only that it is one
+  if (m.viewOnce) return a.kind === 'audio' ? 'View once voice note' : 'View once photo';
   if (a.kind === 'image') return 'Photo';
   if (a.kind === 'audio') return 'Voice note';
   return a.name ? a.name : 'File';
@@ -375,11 +377,13 @@ router.get('/:id/info', loadClass, requireMember, wrap(async (req, res) => {
     .select('profile.name username');
   const byId = new Map(people.map((u) => [String(u._id), u]));
 
-  // Photos, files and voice notes that have not been deleted
+  // Photos, files and voice notes that have not been deleted.
+  // View once media is NEVER listed here (it must not be browsable or counted).
   const hideBefore = hideBeforeOf(req.member);
   const mediaMatch = {
     class:            cls._id,
     deleted:          false,
+    viewOnce:         { $ne: true },
     'attachment.url': { $exists: true, $ne: '' },
   };
   if (hideBefore) mediaMatch.createdAt = { $gt: hideBefore };
@@ -766,7 +770,11 @@ router.get('/:id/search', searchLimiter, loadClass, requireMember, wrap(async (r
   const filter = {
     class:   req.cls._id,
     deleted: false,
-    $or:     [{ text: re }, { 'attachment.name': re }],
+    // The file name of a view-once message is never searchable
+    $or:     [
+      { text: re },
+      { 'attachment.name': re, viewOnce: { $ne: true } },
+    ],
   };
   if (req.query.before && isId(req.query.before)) filter._id = { $lt: req.query.before };
   const hideBefore = hideBeforeOf(req.member);
